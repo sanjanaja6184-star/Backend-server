@@ -815,8 +815,7 @@ def search_userid():
 
         if current_balance < USERID_SEARCH_PRICE:
             return jsonify({'success': False, 'message': f'Insufficient balance. Need ₹{USERID_SEARCH_PRICE}, have ₹{current_balance}'}), 402
-
-    query_id = randint(0, 9999999)
+query_id = randint(0, 9999999)
     
     print(f"[USERID SEARCH] Starting search for UserID: {user_id_str}")
     start_time = time.time()
@@ -828,7 +827,7 @@ def search_userid():
     print(f"[USERID SEARCH] Result: {result}")
 
     if result and isinstance(result, str) and result.startswith('+'):
-        add_to_searched_no_data(user_id_str, "user_id", has_result=True)
+        add_to_searched_no_data(user_id_str"user_id", has_result=True)
         with users_lock:
             users = load_users()
             if name in users:

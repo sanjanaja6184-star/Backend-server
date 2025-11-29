@@ -713,6 +713,7 @@ def search_number():
             return jsonify({'success': False, 'message': first_item.get('message', 'No data found')}), 404
 
         add_to_searched_no_data(number, "number")
+        new_balance = 0
         with users_lock:
             users = load_users()
             if name in users:
@@ -773,6 +774,7 @@ def search_username():
     
     if has_phone:
         add_to_searched_no_data(username, "username", has_result=True)
+        new_balance = 0
         with users_lock:
             users = load_users()
             if name in users:
@@ -831,6 +833,7 @@ def search_userid():
 
     if result and isinstance(result, str) and result.startswith('+'):
         add_to_searched_no_data(user_id_str, "user_id", has_result=True)
+        new_balance = 0
         with users_lock:
             users = load_users()
             if name in users:

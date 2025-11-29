@@ -828,7 +828,7 @@ def search_userid():
     print(f"[USERID SEARCH] Result: {result}")
 
     if result and isinstance(result, str) and result.startswith('+'):
-         add_to_searched_no_data(user_id_str, "user_id", has_result=True)
+        add_to_searched_no_data(user_id_str, "user_id", has_result=True)
         with users_lock:
             users = load_users()
             if name in users:

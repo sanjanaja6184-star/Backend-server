@@ -1266,7 +1266,9 @@ def main():
     print("   • GET /get_balance - Get user balance")
     print("   • GET /admin - Admin panel")
     print("\n" + "="*70 + "\n")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # Don't run on Vercel - use api/index.py instead
+    if os.getenv('VERCEL') is None:
+        app.run(host='0.0.0.0', port=5000, debug=False)
 
 if __name__ == "__main__":
     main()

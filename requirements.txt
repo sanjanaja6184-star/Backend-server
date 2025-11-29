@@ -1,0 +1,5 @@
+Flask==3.0.0
+Werkzeug==3.0.1
+Pyrogram==2.0.106
+TgCrypto==1.2.5
+flask-cors

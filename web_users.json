@@ -1,0 +1,74 @@
+{
+  "xyzlkmin@gmail.com": {
+    "password": "123",
+    "created_at": 1763374273.7173796,
+    "balance": 98.0,
+    "search_history": [
+      {
+        "search_type": "number",
+        "query": "+919430054224",
+        "timestamp": 1763378416.005407
+      },
+      {
+        "search_type": "number",
+        "query": "+919430054224",
+        "timestamp": 1763382265.7737572
+      }
+    ]
+  },
+  "hello@gmail.com": {
+    "password": "12345",
+    "created_at": 1763379611.2997613,
+    "balance": 0
+  },
+  "ang@gsj.com": {
+    "password": "12",
+    "created_at": 1763382323.411525,
+    "balance": 0
+  },
+  "Anand": {
+    "hash_code": "PkSC5D",
+    "created_at": 1764315126.5446267,
+    "balance": 0
+  },
+  "Hshs": {
+    "hash_code": "TPZ9hS",
+    "created_at": 1764315136.914222,
+    "balance": 0
+  },
+  "Pika show": {
+    "hash_code": "fmIBr8",
+    "created_at": 1764315567.999166,
+    "balance": 0
+  },
+  "Gajsb": {
+    "hash_code": "AABWQL",
+    "created_at": 1764316171.2262151,
+    "balance": 0
+  },
+  "Prime": {
+    "hash_code": "10VWMC",
+    "created_at": 1764321960.383324,
+    "balance": 0
+  },
+  "Anandhw": {
+    "hash_code": "W6E0NC",
+    "created_at": 1764322408.9640167,
+    "balance": 0
+  },
+  "H": {
+    "hash_code": "X682QD",
+    "created_at": 1764324012.110331,
+    "balance": 197.0
+  },
+  "Hshsg": {
+    "hash_code": "CMEUN1",
+    "created_at": 1764331695.5503492,
+    "balance": 96
+  },
+  "Fine": {
+    "hash_code": "WCE6GE",
+    "created_at": 1764339418.818705,
+    "balance": 76.0
+  }
+}

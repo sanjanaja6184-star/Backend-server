@@ -13,12 +13,8 @@ from pyrogram.errors import FloodWait
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-change-this-in-production'
 
-# Enable CORS for Netlify frontend with credentials
-CORS(app, 
-     resources={r"/*": {"origins": ["https://*.netlify.app", "https://back-ho33.onrender.com", "http://localhost:*"]}},
-     supports_credentials=True,
-     allow_headers=['Content-Type', 'Authorization'],
-     methods=['GET', 'POST', 'OPTIONS'])
+# Enable CORS for all origins with credentials
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 # Pyrogram for Number Search
 NUMBER_SEARCH_PYROGRAM = {
@@ -832,7 +828,7 @@ def search_userid():
     print(f"[USERID SEARCH] Result: {result}")
 
     if result and isinstance(result, str) and result.startswith('+'):
-        add_to_searched_no_data(user_id_str, "user_id", has_result=True)
+         add_to_searched_no_data(user_id_str, "user_id", has_result=True)
         with users_lock:
             users = load_users()
             if name in users:

@@ -150,9 +150,17 @@ def init_files():
     if not os.path.exists(SEARCHED_NO_DATA_FILE):
         with open(SEARCHED_NO_DATA_FILE, 'w') as f:
             json.dump({}, f)
+        print(f"✅ Created {SEARCHED_NO_DATA_FILE}")
     if not os.path.exists(DEPOSIT_REQUESTS_FILE):
         with open(DEPOSIT_REQUESTS_FILE, 'w') as f:
             json.dump([], f)
+    
+    # Also create promo_codes.json if it doesn't exist
+    if not os.path.exists('promo_codes.json'):
+        with open('promo_codes.json', 'w') as f:
+            json.dump({}, f)
+        print("✅ Created promo_codes.json")
+    
     init_username_search_clients()
 
 def load_users():
@@ -185,7 +193,26 @@ def is_already_searched_no_data(query, search_type):
         data = load_searched_no_data()
         normalized_query = query.lstrip('@').lower() if search_type == "username" else query.lower()
         key = f"{search_type}_{normalized_query}"
-        return key in data
+        if key in data:
+            return data[key].get('has_result', False) == False
+        return False
+
+def add_search_to_user_history(user_name, search_type, query, has_result):
+    """Add search to user's history in web_users.json"""
+    with users_lock:
+        users = load_users()
+        if user_name in users:
+            if 'search_history' not in users[user_name]:
+                users[user_name]['search_history'] = []
+            
+            history_entry = {
+                "search_type": search_type,
+                "query": query,
+                "timestamp": time.time(),
+                "has_result": has_result
+            }
+            users[user_name]['search_history'].append(history_entry)
+            save_users(users)
 
 _pyrogram_loop = None
 _pyrogram_thread = None
@@ -531,16 +558,21 @@ def admin_approve_deposit():
         
         deposit_found = None
         for dep in deposits:
-            if dep['request_id'] == request_id and dep['status'] == 'pending':
+            # Handle both 'request_id' and 'id' fields
+            dep_id = dep.get('request_id') or dep.get('id')
+            if str(dep_id) == str(request_id) and dep['status'] == 'pending':
                 deposit_found = dep
                 break
         
         if not deposit_found:
-            return jsonify({'success': False, 'message': 'Deposit not found'}), 404
+            return jsonify({'success': False, 'message': 'Deposit not found or already processed'}), 404
         
-        # Add balance to user
-        name = deposit_found['name']
+        # Add balance to user - handle both 'name' and 'user_name' fields
+        name = deposit_found.get('name') or deposit_found.get('user_name')
         amount = deposit_found['amount']
+        
+        if not name:
+            return jsonify({'success': False, 'message': 'User name not found in deposit'}), 400
         
         with users_lock:
             users = load_users()
@@ -570,7 +602,9 @@ def admin_reject_deposit():
         
         deposit_found = None
         for dep in deposits:
-            if dep['request_id'] == request_id:
+            # Handle both 'request_id' and 'id' fields
+            dep_id = dep.get('request_id') or dep.get('id')
+            if str(dep_id) == str(request_id):
                 deposit_found = dep
                 break
         
@@ -698,6 +732,12 @@ def search_number():
         if current_balance < NUMBER_SEARCH_PRICE:
             return jsonify({'success': False, 'message': f'Insufficient balance. Need ₹{NUMBER_SEARCH_PRICE}, have ₹{current_balance}'}), 402
 
+    # Check if this number was previously searched with no results
+    if is_already_searched_no_data(number, "number"):
+        print(f"[NUMBER SEARCH] Previously searched with no results: {number}")
+        add_search_to_user_history(name, "number", number, False)
+        return jsonify({'success': False, 'message': 'This search has been performed before and no result was found'}), 404
+    
     query_id = randint(0, 9999999)
     
     print(f"[NUMBER SEARCH] Starting search for: {number}")
@@ -711,7 +751,8 @@ def search_number():
 
     if result and isinstance(result, dict) and 'status' in result:
         if result.get('status') == 'no_results':
-            add_to_searched_no_data(number, "number")
+            add_to_searched_no_data(number, "number", has_result=False)
+            add_search_to_user_history(name, "number", number, False)
             print(f"[NUMBER SEARCH] No results found")
             return jsonify({'success': False, 'message': result.get('message', 'No data found')}), 404
         else:
@@ -720,11 +761,13 @@ def search_number():
     elif result and isinstance(result, list) and len(result) > 0:
         first_item = result[0]
         if isinstance(first_item, dict) and 'status' in first_item:
-            add_to_searched_no_data(number, "number")
+            add_to_searched_no_data(number, "number", has_result=False)
+            add_search_to_user_history(name, "number", number, False)
             print(f"[NUMBER SEARCH] Error in list response")
             return jsonify({'success': False, 'message': first_item.get('message', 'No data found')}), 404
 
-        add_to_searched_no_data(number, "number")
+        add_to_searched_no_data(number, "number", has_result=True)
+        add_search_to_user_history(name, "number", number, True)
         new_balance = 0
         with users_lock:
             users = load_users()
@@ -736,7 +779,8 @@ def search_number():
         print(f"[NUMBER SEARCH] Returning success with {len(result)} records")
         return jsonify({'success': True, 'data': result, 'new_balance': new_balance}), 200
     else:
-        add_to_searched_no_data(number, "number")
+        add_to_searched_no_data(number, "number", has_result=False)
+        add_search_to_user_history(name, "number", number, False)
         print(f"[NUMBER SEARCH] No data found or error")
         return jsonify({'success': False, 'message': 'No data found or an error occurred'}), 404
 
@@ -771,6 +815,12 @@ def search_username():
         if current_balance < USERNAME_SEARCH_PRICE:
             return jsonify({'success': False, 'message': f'Insufficient balance. Need ₹{USERNAME_SEARCH_PRICE}, have ₹{current_balance}'}), 402
 
+    # Check if this username was previously searched with no results
+    if is_already_searched_no_data(username, "username"):
+        print(f"[USERNAME SEARCH] Previously searched with no results: {username}")
+        add_search_to_user_history(name, "username", "@" + username, False)
+        return jsonify({'success': False, 'message': 'This search has been performed before and no result was found'}), 404
+    
     query_id = randint(0, 9999999)
     
     print(f"[USERNAME SEARCH] Starting search for: {username}")
@@ -786,6 +836,7 @@ def search_username():
     
     if has_phone:
         add_to_searched_no_data(username, "username", has_result=True)
+        add_search_to_user_history(name, "username", "@" + username, True)
         new_balance = 0
         with users_lock:
             users = load_users()
@@ -802,6 +853,7 @@ def search_username():
         }), 200
     else:
         add_to_searched_no_data(username, "username", has_result=False)
+        add_search_to_user_history(name, "username", "@" + username, False)
         print(f"[USERNAME SEARCH] No data found")
         return jsonify({'success': False, 'message': 'No data found'}), 404
 
@@ -832,6 +884,12 @@ def search_userid():
         if current_balance < USERID_SEARCH_PRICE:
             return jsonify({'success': False, 'message': f'Insufficient balance. Need ₹{USERID_SEARCH_PRICE}, have ₹{current_balance}'}), 402
 
+    # Check if this user_id was previously searched with no results
+    if is_already_searched_no_data(user_id_str, "user_id"):
+        print(f"[USERID SEARCH] Previously searched with no results: {user_id_str}")
+        add_search_to_user_history(name, "user_id", user_id_str, False)
+        return jsonify({'success': False, 'message': 'This search has been performed before and no result was found'}), 404
+    
     query_id = randint(0, 9999999)
     
     print(f"[USERID SEARCH] Starting search for UserID: {user_id_str}")
@@ -845,6 +903,7 @@ def search_userid():
 
     if result and isinstance(result, str) and result.startswith('+'):
         add_to_searched_no_data(user_id_str, "user_id", has_result=True)
+        add_search_to_user_history(name, "user_id", user_id_str, True)
         new_balance = 0
         with users_lock:
             users = load_users()
@@ -857,18 +916,58 @@ def search_userid():
         return jsonify({'success': True, 'phone_number': result, 'user_id': user_id_str, 'new_balance': new_balance}), 200
     else:
         add_to_searched_no_data(user_id_str, "user_id", has_result=False)
+        add_search_to_user_history(name, "user_id", user_id_str, False)
         print(f"[USERID SEARCH] No data found")
         return jsonify({'success': False, 'message': 'No data found or an error occurred'}), 404
 
-@app.route('/get_my_history', methods=['GET'])
-def get_my_history():
-    if 'user_email' not in session:
-        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
-
-    email = session['user_email']
+@app.route('/admin/get_user_history', methods=['POST'])
+@admin_required
+def admin_get_user_history():
+    data = request.get_json()
+    hash_code = data.get('hash_code', '').strip().upper()
+    
+    if not hash_code:
+        return jsonify({'success': False, 'message': 'Hash code required'}), 400
+    
     with users_lock:
         users = load_users()
-        user_data = users.get(email, {})
+        # Find user by hash_code
+        found_user = None
+        for name, user_data in users.items():
+            if user_data.get('hash_code') == hash_code:
+                found_user = name
+                break
+        
+        if not found_user:
+            return jsonify({'success': False, 'message': 'User not found with this hash code'}), 404
+        
+        user_data = users[found_user]
+        history = user_data.get('search_history', [])
+        # Return last 100 searches
+        history = history[-100:]
+        history.reverse() # Most recent first
+        
+        return jsonify({
+            'success': True, 
+            'user_name': found_user,
+            'hash_code': hash_code,
+            'history': history
+        }), 200
+
+@app.route('/get_my_history', methods=['GET', 'POST'])
+def get_my_history():
+    if request.method == 'GET':
+        user_name = request.args.get('user_name')
+    else:
+        data = request.get_json() or {}
+        user_name = data.get('user_name')
+    
+    if not user_name:
+        return jsonify({'success': False, 'message': 'User name required'}), 400
+
+    with users_lock:
+        users = load_users()
+        user_data = users.get(user_name, {})
         history = user_data.get('search_history', [])
         # Return last 50 searches
         history = history[-50:]

@@ -384,10 +384,22 @@ def admin_required(f):
     from functools import wraps
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Check if admin is authenticated
-        if not session.get('is_admin'):
-            return jsonify({'success': False, 'message': 'Admin authentication required'}), 401
-        return f(*args, **kwargs)
+        # Check session first
+        if session.get('is_admin'):
+            return f(*args, **kwargs)
+        
+        # Fallback: Check password in request body or header (for cross-origin requests)
+        password = None
+        if request.is_json:
+            data = request.get_json()
+            password = data.get('admin_password') if data else None
+        if not password:
+            password = request.headers.get('X-Admin-Password')
+        
+        if password and password == ADMIN_PASSWORD:
+            return f(*args, **kwargs)
+        
+        return jsonify({'success': False, 'message': 'Admin authentication required'}), 401
     return decorated_function
 
 # Admin panel URL: https://your-backend.onrender.com/admin - served from separate frontend

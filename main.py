@@ -370,11 +370,13 @@ def generate_report(query, query_id, is_username_search=False, is_userid_search=
         return None
 
 # Flask Routes
+@app.route('/')
+def health_check():
+    return jsonify({'status': 'Backend API is running!', 'message': 'Use /admin/verify for admin panel or other API endpoints'}), 200
+
 @app.route('/attached_assets/<path:filename>')
 def serve_attached_assets(filename):
     return send_from_directory('attached_assets', filename)
-
-# Frontend deployed separately on Netlify - not needed here
 
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin123')
 
@@ -815,7 +817,8 @@ def search_userid():
 
         if current_balance < USERID_SEARCH_PRICE:
             return jsonify({'success': False, 'message': f'Insufficient balance. Need ₹{USERID_SEARCH_PRICE}, have ₹{current_balance}'}), 402
-query_id = randint(0, 9999999)
+
+    query_id = randint(0, 9999999)
     
     print(f"[USERID SEARCH] Starting search for UserID: {user_id_str}")
     start_time = time.time()
@@ -827,7 +830,7 @@ query_id = randint(0, 9999999)
     print(f"[USERID SEARCH] Result: {result}")
 
     if result and isinstance(result, str) and result.startswith('+'):
-        add_to_searched_no_data(user_id_str"user_id", has_result=True)
+        add_to_searched_no_data(user_id_str, "user_id", has_result=True)
         with users_lock:
             users = load_users()
             if name in users:

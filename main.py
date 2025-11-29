@@ -652,30 +652,35 @@ def generate_hash_code():
 
 @app.route('/signup', methods=['POST'])
 def signup():
-    data = request.get_json()
-    name = data.get('name', '').strip()
+    try:
+        data = request.get_json()
+        name = data.get('name', '').strip()
 
-    if not name:
-        return jsonify({'success': False, 'message': 'Name is required'}), 400
+        if not name:
+            return jsonify({'success': False, 'message': 'Name is required'}), 400
 
-    with users_lock:
-        users = load_users()
-        if name in users:
-            return jsonify({'success': False, 'message': 'Name already taken'}), 409
+        with users_lock:
+            init_files()  # Ensure files exist
+            users = load_users()
+            if name in users:
+                return jsonify({'success': False, 'message': 'Name already taken'}), 409
 
-        # Generate unique hash code
-        hash_code = generate_hash_code()
-        while hash_code in [u.get('hash_code') for u in users.values()]:
+            # Generate unique hash code
             hash_code = generate_hash_code()
+            while hash_code in [u.get('hash_code') for u in users.values()]:
+                hash_code = generate_hash_code()
 
-        users[name] = {
-            'hash_code': hash_code,
-            'created_at': time.time(),
-            'balance': 0
-        }
-        save_users(users)
+            users[name] = {
+                'hash_code': hash_code,
+                'created_at': time.time(),
+                'balance': 0
+            }
+            save_users(users)
 
-    return jsonify({'success': True, 'message': f'Account created! Your Hash Code: {hash_code}', 'hash_code': hash_code}), 201
+        return jsonify({'success': True, 'message': f'Account created! Your Hash Code: {hash_code}', 'hash_code': hash_code}), 201
+    except Exception as e:
+        print(f"[SIGNUP ERROR] {str(e)}")
+        return jsonify({'success': False, 'message': f'Error: {str(e)}'}), 500
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -727,87 +732,95 @@ def get_balance():
 
 @app.route('/search/number', methods=['POST'])
 def search_number():
-    data = request.get_json()
-    number = data.get('number')
+    try:
+        data = request.get_json()
+        number = data.get('number')
 
-    print(f"\n{'='*50}")
-    print(f"[NUMBER SEARCH REQUEST] Number: {number}")
+        print(f"\n{'='*50}")
+        print(f"[NUMBER SEARCH REQUEST] Number: {number}")
 
-    if not number:
-        return jsonify({'success': False, 'message': 'Phone number is required'}), 400
+        if not number:
+            return jsonify({'success': False, 'message': 'Phone number is required'}), 400
 
-    if not (number.startswith('+91') and len(number) == 13 and number[1:].isdigit()):
-         if len(number) == 10 and number.isdigit():
-             number = '+91' + number
-         else:
-            return jsonify({'success': False, 'message': 'Invalid phone number format. Use +91XXXXXXXXXX'}), 400
+        if not (number.startswith('+91') and len(number) == 13 and number[1:].isdigit()):
+             if len(number) == 10 and number.isdigit():
+                 number = '+91' + number
+             else:
+                return jsonify({'success': False, 'message': 'Invalid phone number format. Use +91XXXXXXXXXX'}), 400
 
-    name = data.get('user_name')
-    if not name:
-        return jsonify({'success': False, 'message': 'User name required'}), 400
-    
-    print(f"[NUMBER SEARCH] User: {name}, Formatted number: {number}")
-    
-    NUMBER_SEARCH_PRICE = 4
-    with users_lock:
-        users = load_users()
-        user_data = users.get(name, {})
-        current_balance = user_data.get('balance', 0)
+        name = data.get('user_name')
+        if not name:
+            return jsonify({'success': False, 'message': 'User name required'}), 400
         
-        if current_balance < NUMBER_SEARCH_PRICE:
-            return jsonify({'success': False, 'message': f'Insufficient balance. Need ₹{NUMBER_SEARCH_PRICE}, have ₹{current_balance}'}), 402
-
-    # Check if this number was previously searched with no results
-    if is_already_searched_no_data(number, "number"):
-        print(f"[NUMBER SEARCH] Previously searched with no results: {number}")
-        add_search_to_user_history(name, "number", number, False)
-        return jsonify({'success': False, 'message': 'This search has been performed before and no result was found'}), 404
-    
-    query_id = randint(0, 9999999)
-    
-    print(f"[NUMBER SEARCH] Starting search for: {number}")
-    start_time = time.time()
-    
-    result = generate_report(number, query_id, is_username_search=False, is_userid_search=False)
-    
-    elapsed_time = time.time() - start_time
-    print(f"[NUMBER SEARCH] Completed in {elapsed_time:.2f} seconds")
-    print(f"[NUMBER SEARCH] Raw result: {result}")
-
-    if result and isinstance(result, dict) and 'status' in result:
-        if result.get('status') == 'no_results':
-            add_to_searched_no_data(number, "number", has_result=False)
-            add_search_to_user_history(name, "number", number, False)
-            print(f"[NUMBER SEARCH] No results found")
-            return jsonify({'success': False, 'message': result.get('message', 'No data found')}), 404
-        else:
-            print(f"[NUMBER SEARCH] Error occurred")
-            return jsonify({'success': False, 'message': result.get('message', 'An error occurred')}), 500
-    elif result and isinstance(result, list) and len(result) > 0:
-        first_item = result[0]
-        if isinstance(first_item, dict) and 'status' in first_item:
-            add_to_searched_no_data(number, "number", has_result=False)
-            add_search_to_user_history(name, "number", number, False)
-            print(f"[NUMBER SEARCH] Error in list response")
-            return jsonify({'success': False, 'message': first_item.get('message', 'No data found')}), 404
-
-        add_to_searched_no_data(number, "number", has_result=True)
-        add_search_to_user_history(name, "number", number, True)
-        new_balance = 0
+        print(f"[NUMBER SEARCH] User: {name}, Formatted number: {number}")
+        
+        init_files()  # Ensure files exist
+        
+        NUMBER_SEARCH_PRICE = 4
         with users_lock:
             users = load_users()
-            if name in users:
-                users[name]['balance'] = users[name].get('balance', 0) - NUMBER_SEARCH_PRICE
-                save_users(users)
-                new_balance = users[name]['balance']
+            user_data = users.get(name, {})
+            current_balance = user_data.get('balance', 0)
+            
+            if current_balance < NUMBER_SEARCH_PRICE:
+                return jsonify({'success': False, 'message': f'Insufficient balance. Need ₹{NUMBER_SEARCH_PRICE}, have ₹{current_balance}'}), 402
 
-        print(f"[NUMBER SEARCH] Returning success with {len(result)} records")
-        return jsonify({'success': True, 'data': result, 'new_balance': new_balance}), 200
-    else:
-        add_to_searched_no_data(number, "number", has_result=False)
-        add_search_to_user_history(name, "number", number, False)
-        print(f"[NUMBER SEARCH] No data found or error")
-        return jsonify({'success': False, 'message': 'No data found or an error occurred'}), 404
+        # Check if this number was previously searched with no results
+        if is_already_searched_no_data(number, "number"):
+            print(f"[NUMBER SEARCH] Previously searched with no results: {number}")
+            add_search_to_user_history(name, "number", number, False)
+            return jsonify({'success': False, 'message': 'This search has been performed before and no result was found'}), 404
+        
+        query_id = randint(0, 9999999)
+        
+        print(f"[NUMBER SEARCH] Starting search for: {number}")
+        start_time = time.time()
+        
+        result = generate_report(number, query_id, is_username_search=False, is_userid_search=False)
+        
+        elapsed_time = time.time() - start_time
+        print(f"[NUMBER SEARCH] Completed in {elapsed_time:.2f} seconds")
+        print(f"[NUMBER SEARCH] Raw result: {result}")
+
+        if result and isinstance(result, dict) and 'status' in result:
+            if result.get('status') == 'no_results':
+                add_to_searched_no_data(number, "number", has_result=False)
+                add_search_to_user_history(name, "number", number, False)
+                print(f"[NUMBER SEARCH] No results found")
+                return jsonify({'success': False, 'message': result.get('message', 'No data found')}), 404
+            else:
+                print(f"[NUMBER SEARCH] Error occurred")
+                return jsonify({'success': False, 'message': result.get('message', 'An error occurred')}), 500
+        elif result and isinstance(result, list) and len(result) > 0:
+            first_item = result[0]
+            if isinstance(first_item, dict) and 'status' in first_item:
+                add_to_searched_no_data(number, "number", has_result=False)
+                add_search_to_user_history(name, "number", number, False)
+                print(f"[NUMBER SEARCH] Error in list response")
+                return jsonify({'success': False, 'message': first_item.get('message', 'No data found')}), 404
+
+            add_to_searched_no_data(number, "number", has_result=True)
+            add_search_to_user_history(name, "number", number, True)
+            new_balance = 0
+            with users_lock:
+                users = load_users()
+                if name in users:
+                    users[name]['balance'] = users[name].get('balance', 0) - NUMBER_SEARCH_PRICE
+                    save_users(users)
+                    new_balance = users[name]['balance']
+
+            print(f"[NUMBER SEARCH] Returning success with {len(result)} records")
+            return jsonify({'success': True, 'data': result, 'new_balance': new_balance}), 200
+        else:
+            add_to_searched_no_data(number, "number", has_result=False)
+            add_search_to_user_history(name, "number", number, False)
+            print(f"[NUMBER SEARCH] No data found or error")
+            return jsonify({'success': False, 'message': 'No data found or an error occurred'}), 404
+    except Exception as e:
+        print(f"[SEARCH NUMBER ERROR] {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': f'Search error: {str(e)}'}), 500
 
 
 @app.route('/search/username', methods=['POST'])

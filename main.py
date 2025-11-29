@@ -286,17 +286,32 @@ async def generate_report_from_bot(query, query_id, is_username_search=False, is
     try:
         if is_username_search or is_userid_search:
             if not username_search_clients or ACTIVE_USERNAME_PYROGRAM_INDEX >= len(username_search_clients):
+                print("[ERROR] No username search clients available")
                 return None
             client = username_search_clients[ACTIVE_USERNAME_PYROGRAM_INDEX]
             target_bot = "@Dfjyt_bot"
         else:
             if not number_search_client:
+                print("[ERROR] Number search client not initialized")
                 return None
             client = number_search_client
             target_bot = "@ZaverinBot"
 
-        if not client.is_connected:
-            await client.start()
+        # Try to connect with retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if not client.is_connected:
+                    print(f"[CONNECTION] Attempting to connect (attempt {attempt + 1}/{max_retries})...")
+                    await client.start()
+                    print("[CONNECTION] Successfully connected!")
+                break
+            except Exception as e:
+                print(f"[CONNECTION ERROR] Attempt {attempt + 1} failed: {e}")
+                if attempt == max_retries - 1:
+                    print("[CONNECTION] All connection attempts failed")
+                    return None
+                await asyncio.sleep(2)
 
         if is_username_search:
             if query.startswith('@'):
@@ -385,11 +400,21 @@ async def generate_report_from_bot(query, query_id, is_username_search=False, is
 def generate_report(query, query_id, is_username_search=False, is_userid_search=False):
     try:
         loop = get_pyrogram_loop()
+        
+        # Check if loop is running
+        if loop is None or not loop.is_running():
+            print("[ERROR] Event loop is not running!")
+            return None
+            
         future = asyncio.run_coroutine_threadsafe(
             generate_report_from_bot(query, query_id, is_username_search, is_userid_search),
             loop
         )
-        return future.result(timeout=20)
+        result = future.result(timeout=25)
+        return result
+    except TimeoutError:
+        print(f"[ERROR] Search timed out after 25 seconds")
+        return None
     except Exception as e:
         print(f"[ERROR] generate_report wrapper: {e}")
         import traceback
@@ -1170,26 +1195,46 @@ def ensure_pyrogram_session():
     """Ensure Pyrogram accounts are authenticated"""
     try:
         loop = get_pyrogram_loop()
+        
+        # Give the loop some time to start
+        import time
+        time.sleep(2)
+        
         if number_search_client:
             print("\n📞 Authenticating Number Search Pyrogram...")
-            future = asyncio.run_coroutine_threadsafe(
-                start_pyrogram_client(number_search_client, "Number Search Pyrogram"),
-                loop
-            )
-            future.result()
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    start_pyrogram_client(number_search_client, "Number Search Pyrogram"),
+                    loop
+                )
+                result = future.result(timeout=30)
+                if result:
+                    print("✅ Number Search Pyrogram authenticated successfully")
+                else:
+                    print("⚠️ Number Search Pyrogram authentication failed")
+            except Exception as e:
+                print(f"❌ Number Search Pyrogram error: {e}")
 
         for idx, client in enumerate(username_search_clients):
             config = USERNAME_SEARCH_PYROGRAMS[idx]
             if config.get('api_id', 0) == 0 or not config.get('api_hash'):
-                continue # Skip unconfigured accounts
+                print(f"⚠️ Skipping Username Search Pyrogram #{idx + 1} - not configured")
+                continue
             print(f"\n👤 Authenticating Username Search Pyrogram #{idx + 1}...")
-            future = asyncio.run_coroutine_threadsafe(
-                start_pyrogram_client(client, f"Username Search Pyrogram #{idx + 1}"),
-                loop
-            )
-            future.result()
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    start_pyrogram_client(client, f"Username Search Pyrogram #{idx + 1}"),
+                    loop
+                )
+                result = future.result(timeout=30)
+                if result:
+                    print(f"✅ Username Search Pyrogram #{idx + 1} authenticated successfully")
+                else:
+                    print(f"⚠️ Username Search Pyrogram #{idx + 1} authentication failed")
+            except Exception as e:
+                print(f"❌ Username Search Pyrogram #{idx + 1} error: {e}")
 
-        print("\n✅ All configured Pyrogram sessions authenticated.")
+        print("\n✅ Pyrogram authentication process completed.")
         return True
     except Exception as e:
         print(f"\n❌ Pyrogram connection error: {e}")

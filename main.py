@@ -1,22 +1,44 @@
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify, send_from_directory
-from flask_cors import CORS
-import json
+"""
+Search Dashboard - Telegram Bot Admin + Flask API Backend
+=========================================================
+Deploy this file on any Telegram Bot Hosting platform (like Heroku, Railway, PythonAnywhere)
+The bot handles all admin functions, Flask API handles frontend requests.
+
+Environment Variables Required:
+- BOT_TOKEN: Your Telegram Bot Token (get from @BotFather)
+- ADMIN_ID: Your Telegram User ID (for admin authorization)
+- ADMIN_PASSWORD: Password for API admin functions (optional fallback)
+
+For Pyrogram (Search Accounts):
+- NUMBER_API_ID, NUMBER_API_HASH, NUMBER_PHONE: For number search account
+- USERNAME1_API_ID, USERNAME1_API_HASH, USERNAME1_PHONE: For username search account 1
+- USERNAME2_API_ID, USERNAME2_API_HASH, USERNAME2_PHONE: For username search account 2
+"""
+
 import os
-import threading
-from random import randint, choice
-import string
+import json
 import time
 import asyncio
+import threading
+import string
+from random import randint, choice
+
+from flask import Flask, request, jsonify, session, send_from_directory
+from flask_cors import CORS
 from pyrogram.client import Client
 from pyrogram.errors import FloodWait
 
-app = Flask(__name__)
-app.secret_key = 'your-secret-key-change-this-in-production'
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-# Enable CORS for all origins with credentials
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+# ============================================
+# CONFIGURATION
+# ============================================
 
-# Pyrogram for Number Search
+BOT_TOKEN = '8327107898:AAEdV1eHiX4ckuUncT9b4j90iYNnFIHEZyo'
+ADMIN_ID = -8415818047
+ADMIN_PASSWORD = 'admin123'
+
 NUMBER_SEARCH_PYROGRAM = {
     "api_id": 39782165,
     "api_hash": "e0e665ae0de9e60ab4b1d77fcc71820c",
@@ -24,7 +46,6 @@ NUMBER_SEARCH_PYROGRAM = {
     "session_name": "number_search_account"
 }
 
-# Pyrogram for Username Search (Phone extraction from @Dfjyt_bot)
 USERNAME_SEARCH_PYROGRAMS = [
     {
         "api_id": 34654267,
@@ -39,56 +60,7 @@ USERNAME_SEARCH_PYROGRAMS = [
         "phone": "+919142484615",
         "target_bot": "@Dfjyt_bot",
         "session_name": "username_search_account_2"
-    },
-    {
-        "api_id": 0,
-        "api_hash": "",
-        "phone": "",
-        "target_bot": "@Dfjyt_bot",
-        "session_name": "username_search_account_3"
-    },
-    {
-        "api_id": 0,
-        "api_hash": "",
-        "phone": "",
-        "target_bot": "@Dfjyt_bot",
-        "session_name": "username_search_account_4"
-    },
-    {
-        "api_id": 0,
-        "api_hash": "",
-        "phone": "",
-        "target_bot": "@Dfjyt_bot",
-        "session_name": "username_search_account_5"
-    },
-    {
-        "api_id": 0,
-        "api_hash": "",
-        "phone": "",
-        "target_bot": "@Dfjyt_bot",
-        "session_name": "username_search_account_6"
-    },
-    {
-        "api_id": 0,
-        "api_hash": "",
-        "phone": "",
-        "target_bot": "@Dfjyt_bot",
-        "session_name": "username_search_account_7"
-    },
-    {
-        "api_id": 0,
-        "api_hash": "",
-        "phone": "",
-        "target_bot": "@Dfjyt_bot",
-        "session_name": "username_search_account_8"
-    },
-    {
-        "api_id": 0,
-        "api_hash": "",
-        "phone": "",
-        "target_bot": "@Dfjyt_bot",
-        "session_name": "username_search_account_9"
-    },
+    }
 ]
 
 ACTIVE_USERNAME_PYROGRAM_INDEX = 0
@@ -97,37 +69,53 @@ ACTIVE_USERNAME_PYROGRAM_INDEX = 0
 USERS_FILE = "web_users.json"
 SEARCHED_NO_DATA_FILE = "searched_no_data.json"
 DEPOSIT_REQUESTS_FILE = "deposit_requests.json"
+PROMO_CODES_FILE = "promo_codes.json"
 
 # Thread locks
 users_lock = threading.RLock()
 searched_no_data_lock = threading.RLock()
 
-# Create Pyrogram clients
+# ============================================
+# FLASK APP SETUP
+# ============================================
+
+app = Flask(__name__)
+app.secret_key = 'search-dashboard-secret-key-2024'
+
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+
+# ============================================
+# PYROGRAM CLIENTS
+# ============================================
+
 number_search_client = None
 username_search_clients = []
 
-if NUMBER_SEARCH_PYROGRAM["api_id"] != 0:
-    number_search_client = Client(
-        NUMBER_SEARCH_PYROGRAM["session_name"],
-        api_id=NUMBER_SEARCH_PYROGRAM["api_id"],
-        api_hash=NUMBER_SEARCH_PYROGRAM["api_hash"],
-        phone_number=NUMBER_SEARCH_PYROGRAM["phone"],
-        workdir=".",
-        no_updates=True
-    )
-
-def init_username_search_clients():
-    global username_search_clients
+def init_pyrogram_clients():
+    global number_search_client, username_search_clients
+    
+    if NUMBER_SEARCH_PYROGRAM["api_id"] != 0:
+        try:
+            number_search_client = Client(
+                NUMBER_SEARCH_PYROGRAM["session_name"],
+                api_id=NUMBER_SEARCH_PYROGRAM["api_id"],
+                api_hash=NUMBER_SEARCH_PYROGRAM["api_hash"],
+                phone_number=NUMBER_SEARCH_PYROGRAM["phone"],
+                workdir=".",
+                no_updates=True
+            )
+            print("✅ Number search client initialized")
+        except Exception as e:
+            print(f"❌ Number search client init failed: {e}")
+    
     username_search_clients = []
     for idx, config in enumerate(USERNAME_SEARCH_PYROGRAMS):
         session_file = f"{config['session_name']}.session"
-        # Check if session file exists OR if credentials are provided
         if os.path.exists(session_file) or (config["api_id"] != 0 and config["api_hash"]):
             try:
-                # Use provided credentials or defaults for existing sessions
-                api_id = config["api_id"] if config["api_id"] != 0 else 1  # Dummy value for existing sessions
-                api_hash = config["api_hash"] if config["api_hash"] else "dummy"  # Dummy value for existing sessions
-
+                api_id = config["api_id"] if config["api_id"] != 0 else 1
+                api_hash = config["api_hash"] if config["api_hash"] else "dummy"
+                
                 client = Client(
                     config["session_name"],
                     api_id=api_id,
@@ -137,96 +125,115 @@ def init_username_search_clients():
                     no_updates=True
                 )
                 username_search_clients.append(client)
-                print(f"✅ Loaded session for {config['session_name']}")
+                print(f"✅ Username search client #{idx + 1} initialized")
             except Exception as e:
-                print(f"❌ Error initializing username search client {idx + 1} ({config['session_name']}): {e}")
-        else:
-            print(f"⚠️ Skipping {config['session_name']} - No session file and no credentials")
+                print(f"❌ Username search client #{idx + 1} failed: {e}")
+
+# ============================================
+# FILE OPERATIONS
+# ============================================
 
 def init_files():
-    if not os.path.exists(USERS_FILE):
-        with open(USERS_FILE, 'w') as f:
-            json.dump({}, f)
-    if not os.path.exists(SEARCHED_NO_DATA_FILE):
-        with open(SEARCHED_NO_DATA_FILE, 'w') as f:
-            json.dump({}, f)
-        print(f"✅ Created {SEARCHED_NO_DATA_FILE}")
-    if not os.path.exists(DEPOSIT_REQUESTS_FILE):
-        with open(DEPOSIT_REQUESTS_FILE, 'w') as f:
-            json.dump([], f)
-    
-    # Also create promo_codes.json if it doesn't exist
-    if not os.path.exists('promo_codes.json'):
-        with open('promo_codes.json', 'w') as f:
-            json.dump({}, f)
-        print("✅ Created promo_codes.json")
-    
-    init_username_search_clients()
+    for filepath, default_data in [
+        (USERS_FILE, {}),
+        (SEARCHED_NO_DATA_FILE, {}),
+        (DEPOSIT_REQUESTS_FILE, []),
+        (PROMO_CODES_FILE, {})
+    ]:
+        if not os.path.exists(filepath):
+            with open(filepath, 'w') as f:
+                json.dump(default_data, f)
+            print(f"✅ Created {filepath}")
 
-def load_users():
-    with open(USERS_FILE, 'r') as f:
-        return json.load(f)
+def load_json(filepath, default=None):
+    try:
+        with open(filepath, 'r') as f:
+            return json.load(f)
+    except:
+        return default if default is not None else {}
 
-def save_users(data):
-    with open(USERS_FILE, 'w') as f:
+def save_json(filepath, data):
+    with open(filepath, 'w') as f:
         json.dump(data, f, indent=2)
 
+def load_users():
+    return load_json(USERS_FILE, {})
+
+def save_users(data):
+    save_json(USERS_FILE, data)
+
 def load_searched_no_data():
-    with open(SEARCHED_NO_DATA_FILE, 'r') as f:
-        return json.load(f)
+    return load_json(SEARCHED_NO_DATA_FILE, {})
 
 def add_to_searched_no_data(query, search_type, has_result=False):
     with searched_no_data_lock:
         data = load_searched_no_data()
-        key = f"{search_type}_{query.lower()}"
+        # Normalize the query for consistent key generation (same as is_already_searched_no_data)
+        if search_type == "username":
+            normalized_query = query.lstrip('@').lower()
+        elif search_type == "userid":
+            normalized_query = query.strip().lower()
+        else:
+            normalized_query = query.lower()
+        
+        key = f"{search_type}_{normalized_query}"
         data[key] = {
             "query": query,
             "search_type": search_type,
             "timestamp": time.time(),
             "has_result": has_result
         }
-        with open(SEARCHED_NO_DATA_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
+        save_json(SEARCHED_NO_DATA_FILE, data)
 
 def is_already_searched_no_data(query, search_type):
     with searched_no_data_lock:
         data = load_searched_no_data()
-        normalized_query = query.lstrip('@').lower() if search_type == "username" else query.lower()
+        # Normalize the query for consistent key generation
+        if search_type == "username":
+            normalized_query = query.lstrip('@').lower()
+        elif search_type == "userid":
+            normalized_query = query.strip().lower()
+        else:
+            normalized_query = query.lower()
+        
         key = f"{search_type}_{normalized_query}"
         if key in data:
+            # Block if previously searched and no result was found
             return data[key].get('has_result', False) == False
         return False
 
 def add_search_to_user_history(user_name, search_type, query, has_result):
-    """Add search to user's history in web_users.json"""
     with users_lock:
         users = load_users()
         if user_name in users:
             if 'search_history' not in users[user_name]:
                 users[user_name]['search_history'] = []
-            
-            history_entry = {
+            users[user_name]['search_history'].append({
                 "search_type": search_type,
                 "query": query,
                 "timestamp": time.time(),
                 "has_result": has_result
-            }
-            users[user_name]['search_history'].append(history_entry)
+            })
             save_users(users)
 
-_pyrogram_loop = None
-_pyrogram_thread = None
+def generate_hash_code():
+    chars = string.ascii_uppercase + string.digits
+    return ''.join(choice(chars) for _ in range(6))
 
-def get_pyrogram_loop():
-    global _pyrogram_loop, _pyrogram_thread
-    if _pyrogram_loop is None:
-        def start_loop(loop):
-            asyncio.set_event_loop(loop)
-            loop.run_forever()
-        _pyrogram_loop = asyncio.new_event_loop()
-        _pyrogram_thread = threading.Thread(target=start_loop, args=(_pyrogram_loop,), daemon=True)
-        _pyrogram_thread.start()
-    return _pyrogram_loop
+# ============================================
+# PYROGRAM SEARCH FUNCTIONS
+# ============================================
+
+def get_event_loop():
+    """Get or create event loop safely for use within Flask requests."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("Event loop is closed")
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop
 
 def filter_response_data(raw_text):
     import re
@@ -239,6 +246,11 @@ def filter_response_data(raw_text):
         u"\U000024C2-\U0001F251"
         "]+", flags=re.UNICODE)
     clean_text = emoji_pattern.sub('', raw_text)
+    
+    # Check for "The name of the father" field to verify complete data
+    if "The name of the father" not in raw_text:
+        return {"status": "no_results", "message": "Incomplete data - missing father's name"}
+    
     paragraphs = clean_text.split('\n\n')
     all_records = []
     for paragraph in paragraphs:
@@ -269,8 +281,15 @@ def filter_response_data(raw_text):
 
 def extract_telegram_data(raw_text):
     import re
-    phone_pattern = r'[Тт]елефон\s*[:\s]+(\+?\d{10,15})'
-    match = re.search(phone_pattern, raw_text)
+    # Check for "Phone": "+91..." pattern (English format)
+    phone_pattern_en = r'[Pp]hone["\']?\s*:\s*["\']?\+?(\d{10,15})["\']?'
+    # Check for Russian format (Телефон)
+    phone_pattern_ru = r'[Тт]елефон\s*[:\s]+(\+?\d{10,15})'
+    
+    match = re.search(phone_pattern_en, raw_text)
+    if not match:
+        match = re.search(phone_pattern_ru, raw_text)
+    
     if match:
         phone_number = match.group(1).replace('+', '')
         if len(phone_number) == 12 and phone_number.startswith('91'):
@@ -297,7 +316,6 @@ async def generate_report_from_bot(query, query_id, is_username_search=False, is
             client = number_search_client
             target_bot = "@ZaverinBot"
 
-        # Try to connect with retry logic
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -309,22 +327,19 @@ async def generate_report_from_bot(query, query_id, is_username_search=False, is
             except Exception as e:
                 print(f"[CONNECTION ERROR] Attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
-                    print("[CONNECTION] All connection attempts failed")
                     return None
                 await asyncio.sleep(2)
 
         if is_username_search:
-            if query.startswith('@'):
-                formatted_query = f"t.me/{query[1:]}"
-            else:
-                formatted_query = f"t.me/{query}"
-            print(f"[USERNAME SEARCH] Sending formatted query: {formatted_query} to {target_bot}")
+            formatted_query = f"t.me/{query[1:]}" if query.startswith('@') else f"t.me/{query}"
+            print(f"[USERNAME SEARCH] Sending: {formatted_query} to {target_bot}")
         elif is_userid_search:
+            # Add /tg prefix to userid
             formatted_query = f"/tg{query}"
-            print(f"[USERID SEARCH] Sending formatted query: {formatted_query} to {target_bot}")
+            print(f"[USERID SEARCH] Sending: {formatted_query} to {target_bot}")
         else:
             formatted_query = query
-            print(f"[NUMBER SEARCH] Sending query: {formatted_query} to {target_bot}")
+            print(f"[NUMBER SEARCH] Sending: {formatted_query} to {target_bot}")
 
         await client.send_message(target_bot, formatted_query, parse_mode=None)
         response_text = ""
@@ -340,10 +355,8 @@ async def generate_report_from_bot(query, query_id, is_username_search=False, is
                     if msg.from_user and msg.from_user.username == target_bot.replace("@", ""):
                         if msg.date.timestamp() > start_time:
                             msg_text = msg.text or msg.caption or ""
-                            print(f"[BOT RESPONSE] Raw message from {target_bot}: {msg_text[:500]}...")
                             if msg_text and ('+' in msg_text or 'ID:' in msg_text or 'id:' in msg_text.lower() or 'елефон' in msg_text or 'Phone' in msg_text):
                                 response_text = msg_text
-                                print(f"[MATCHED] Found valid response with phone/ID data")
                                 break
                 if response_text:
                     break
@@ -358,10 +371,8 @@ async def generate_report_from_bot(query, query_id, is_username_search=False, is
                     if message.from_user and message.from_user.username == target_bot.replace("@", ""):
                         if message.date.timestamp() > (start_time - 2):
                             msg_text = message.text or message.caption or ""
-                            print(f"[NUMBER SEARCH RESPONSE] Raw message: {msg_text[:500]}...")
                             if msg_text and len(msg_text) > 50:
                                 response_text = msg_text
-                                print(f"[NUMBER SEARCH] Found valid response")
                                 break
                 if response_text:
                     break
@@ -369,22 +380,12 @@ async def generate_report_from_bot(query, query_id, is_username_search=False, is
                 attempts += 1
 
         if not response_text:
-            print(f"[ERROR] No response received from {target_bot}")
             return None
 
-        print(f"[FULL RESPONSE] Complete bot response:\n{response_text}")
-
         if is_username_search or is_userid_search:
-            phone_number = extract_telegram_data(response_text)
-            print(f"[EXTRACTED] Phone number: {phone_number}")
-            if phone_number:
-                return phone_number
-            else:
-                return None
+            return extract_telegram_data(response_text)
         else:
-            filtered_text = filter_response_data(response_text)
-            print(f"[FILTERED] Number search result: {filtered_text}")
-            return filtered_text
+            return filter_response_data(response_text)
 
     except FloodWait as e:
         wait_time = e.value if isinstance(e.value, (int, float)) else 60
@@ -399,256 +400,664 @@ async def generate_report_from_bot(query, query_id, is_username_search=False, is
 
 def generate_report(query, query_id, is_username_search=False, is_userid_search=False):
     try:
-        loop = get_pyrogram_loop()
-        
-        # Check if loop is running
-        if loop is None or not loop.is_running():
-            print("[ERROR] Event loop is not running!")
-            return None
-            
-        future = asyncio.run_coroutine_threadsafe(
-            generate_report_from_bot(query, query_id, is_username_search, is_userid_search),
-            loop
+        loop = get_event_loop()
+        # Use run_until_complete instead of run_coroutine_threadsafe to avoid loop issues
+        result = loop.run_until_complete(
+            asyncio.wait_for(
+                generate_report_from_bot(query, query_id, is_username_search, is_userid_search),
+                timeout=25
+            )
         )
-        result = future.result(timeout=25)
         return result
-    except TimeoutError:
-        print(f"[ERROR] Search timed out after 25 seconds")
+    except asyncio.TimeoutError:
+        print(f"[ERROR] generate_report timeout after 25 seconds")
         return None
     except Exception as e:
-        print(f"[ERROR] generate_report wrapper: {e}")
+        print(f"[ERROR] generate_report: {e}")
         import traceback
         traceback.print_exc()
         return None
 
-# Flask Routes
-@app.route('/')
-def health_check():
-    return jsonify({'status': 'Backend API is running!', 'message': 'Use /admin/verify for admin panel or other API endpoints'}), 200
+async def start_pyrogram_client(client, client_name):
+    try:
+        await client.start()
+        print(f"✅ {client_name} connected.")
+        return True
+    except Exception as e:
+        print(f"❌ {client_name} connection error: {e}")
+        return False
 
-@app.route('/attached_assets/<path:filename>')
-def serve_attached_assets(filename):
-    return send_from_directory('attached_assets', filename)
-
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin123')
-
-def admin_required(f):
-    from functools import wraps
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        # Check session first
-        if session.get('is_admin'):
-            return f(*args, **kwargs)
+def ensure_pyrogram_session():
+    try:
+        time.sleep(2)
         
-        # Fallback: Check password in request body or header (for cross-origin requests)
-        password = None
-        if request.is_json:
-            data = request.get_json()
-            password = data.get('admin_password') if data else None
-        if not password:
-            password = request.headers.get('X-Admin-Password')
-        
-        if password and password == ADMIN_PASSWORD:
-            return f(*args, **kwargs)
-        
-        return jsonify({'success': False, 'message': 'Admin authentication required'}), 401
-    return decorated_function
+        if number_search_client:
+            print("📞 Authenticating Number Search Pyrogram...")
+            try:
+                loop = get_event_loop()
+                loop.run_until_complete(
+                    asyncio.wait_for(
+                        start_pyrogram_client(number_search_client, "Number Search"),
+                        timeout=30
+                    )
+                )
+            except Exception as e:
+                print(f"❌ Number Search error: {e}")
 
-# Admin panel URL: https://your-backend.onrender.com/admin - served from separate frontend
+        for idx, client in enumerate(username_search_clients):
+            print(f"👤 Authenticating Username Search Pyrogram #{idx + 1}...")
+            try:
+                loop = get_event_loop()
+                loop.run_until_complete(
+                    asyncio.wait_for(
+                        start_pyrogram_client(client, f"Username Search #{idx + 1}"),
+                        timeout=30
+                    )
+                )
+            except Exception as e:
+                print(f"❌ Username Search #{idx + 1} error: {e}")
 
-@app.route('/admin/verify', methods=['POST'])
-def admin_verify():
-    data = request.get_json()
-    password = data.get('password', '')
+        return True
+    except Exception as e:
+        print(f"❌ Pyrogram connection error: {e}")
+        return False
+
+# ============================================
+# TELEGRAM BOT - ADMIN COMMANDS (NO PROTECTION)
+# ============================================
+
+user_states = {}
+
+def get_main_keyboard():
+    keyboard = [
+        [KeyboardButton("👥 Users"), KeyboardButton("💰 Deposits")],
+        [KeyboardButton("➕ Add Balance"), KeyboardButton("➖ Deduct Balance")],
+        [KeyboardButton("🎁 Promos"), KeyboardButton("➕ Create Promo")],
+        [KeyboardButton("📜 User History"), KeyboardButton("📊 Status")],
+        [KeyboardButton("🔄 Switch Account")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔐 *Admin Panel*\n\n"
+        "Select an option below:",
+        parse_mode='Markdown',
+        reply_markup=get_main_keyboard()
+    )
+
+async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    with users_lock:
+        users = load_users()
     
-    if password == ADMIN_PASSWORD:
-        session['is_admin'] = True
-        session.permanent = True
-        return jsonify({'success': True}), 200
-    return jsonify({'success': False, 'message': 'Invalid password'}), 401
-
-@app.route('/admin/logout', methods=['POST'])
-def admin_logout():
-    session.pop('is_admin', None)
-    return jsonify({'success': True}), 200
-
-@app.route('/admin/add_balance', methods=['POST'])
-@admin_required
-def admin_add_balance():
-    data = request.get_json()
-    hash_code = data.get('user_name')  # This is actually hash_code from admin panel
-    amount = data.get('amount')
+    if not users:
+        msg = "📭 No users found."
+    else:
+        msg = "👥 *All Users:*\n\n"
+        for name, data in list(users.items())[:50]:
+            hash_code = data.get('hash_code', 'N/A')
+            balance = data.get('balance', 0)
+            msg += f"• *{name}*\n  Hash: `{hash_code}`\n  Balance: ₹{balance}\n\n"
+        
+        if len(users) > 50:
+            msg += f"\n_...and {len(users) - 50} more users_"
     
-    if not hash_code or not amount:
-        return jsonify({'success': False, 'message': 'Missing fields'}), 400
+    await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=get_main_keyboard())
+
+async def cmd_addbalance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Usage: /addbalance <hash_code> <amount>")
+        return
+    
+    hash_code = context.args[0].upper()
+    try:
+        amount = float(context.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid amount!")
+        return
     
     with users_lock:
         users = load_users()
-        # Find user by hash_code
         found_user = None
         for name, user_data in users.items():
-            if user_data.get('hash_code') == hash_code.upper():
+            if user_data.get('hash_code') == hash_code:
                 found_user = name
                 break
         
         if not found_user:
-            return jsonify({'success': False, 'message': 'User not found with this hash code'}), 404
+            await update.message.reply_text(f"❌ User with hash `{hash_code}` not found!")
+            return
         
         users[found_user]['balance'] = users[found_user].get('balance', 0) + amount
         save_users(users)
         new_balance = users[found_user]['balance']
     
-    return jsonify({'success': True, 'message': f'Added ₹{amount} to {found_user} ({hash_code}). New balance: ₹{new_balance}'}), 200
+    await update.message.reply_text(
+        f"✅ Added ₹{amount} to *{found_user}* (`{hash_code}`)\n"
+        f"💰 New Balance: ₹{new_balance}",
+        parse_mode='Markdown'
+    )
 
-@app.route('/admin/deduct_balance', methods=['POST'])
-@admin_required
-def admin_deduct_balance():
-    data = request.get_json()
-    hash_code = data.get('user_name')  # This is actually hash_code from admin panel
-    amount = data.get('amount')
+async def cmd_deductbalance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Usage: /deductbalance <hash_code> <amount>")
+        return
     
-    if not hash_code or not amount:
-        return jsonify({'success': False, 'message': 'Missing fields'}), 400
+    hash_code = context.args[0].upper()
+    try:
+        amount = float(context.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid amount!")
+        return
     
     with users_lock:
         users = load_users()
-        # Find user by hash_code
         found_user = None
         for name, user_data in users.items():
-            if user_data.get('hash_code') == hash_code.upper():
+            if user_data.get('hash_code') == hash_code:
                 found_user = name
                 break
         
         if not found_user:
-            return jsonify({'success': False, 'message': 'User not found with this hash code'}), 404
+            await update.message.reply_text(f"❌ User with hash `{hash_code}` not found!")
+            return
         
         users[found_user]['balance'] = users[found_user].get('balance', 0) - amount
         save_users(users)
         new_balance = users[found_user]['balance']
     
-    return jsonify({'success': True, 'message': f'Deducted ₹{amount} from {found_user} ({hash_code}). New balance: ₹{new_balance}'}), 200
+    await update.message.reply_text(
+        f"✅ Deducted ₹{amount} from *{found_user}* (`{hash_code}`)\n"
+        f"💰 New Balance: ₹{new_balance}",
+        parse_mode='Markdown'
+    )
 
-@app.route('/admin/switch_pyrogram', methods=['POST'])
-@admin_required
-def admin_switch_pyrogram():
-    global ACTIVE_USERNAME_PYROGRAM_INDEX
-    data = request.get_json()
-    account_index = data.get('account_index')
+async def show_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    deposits = load_json(DEPOSIT_REQUESTS_FILE, [])
+    pending = [d for d in deposits if d.get('status') == 'pending']
     
-    if account_index is None or account_index < 0 or account_index >= len(username_search_clients):
-        return jsonify({'success': False, 'message': 'Invalid account index'}), 400
+    if not pending:
+        msg = "📭 No pending deposits."
+    else:
+        msg = "💰 *Pending Deposits:*\n\n"
+        for dep in pending[-10:]:
+            name = dep.get('name', dep.get('user_name', 'Unknown'))
+            amount = dep.get('amount', 0)
+            utr = dep.get('utr', 'N/A')
+            req_id = dep.get('request_id', dep.get('id', 'N/A'))
+            timestamp = time.strftime('%Y-%m-%d %H:%M', time.localtime(dep.get('timestamp', 0)))
+            
+            msg += f"🆔 ID: `{req_id}`\n"
+            msg += f"👤 User: *{name}*\n"
+            msg += f"💵 Amount: ₹{amount}\n"
+            msg += f"🔢 UTR: `{utr}`\n"
+            msg += f"📅 Time: {timestamp}\n\n"
+        
+        msg += "\n💡 Use /approve <ID> or /reject <ID> to process deposits"
     
-    ACTIVE_USERNAME_PYROGRAM_INDEX = account_index
-    return jsonify({'success': True, 'message': f'Switched to Pyrogram Account #{account_index + 1}'}), 200
+    await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=get_main_keyboard())
 
-@app.route('/admin/get_all_users', methods=['GET'])
-@admin_required
-def admin_get_all_users():
+async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 1:
+        await update.message.reply_text("❌ Usage: /approve <request_id>")
+        return
+    
+    request_id = context.args[0]
+    deposits = load_json(DEPOSIT_REQUESTS_FILE, [])
+    
+    deposit_found = None
+    for dep in deposits:
+        dep_id = str(dep.get('request_id') or dep.get('id'))
+        if dep_id == str(request_id) and dep['status'] == 'pending':
+            deposit_found = dep
+            break
+    
+    if not deposit_found:
+        await update.message.reply_text("❌ Deposit not found or already processed!")
+        return
+    
+    name = deposit_found.get('name') or deposit_found.get('user_name')
+    amount = deposit_found['amount']
+    
     with users_lock:
         users = load_users()
-    return jsonify({'success': True, 'users': users}), 200
+        if name in users:
+            users[name]['balance'] = users[name].get('balance', 0) + amount
+            save_users(users)
+            deposit_found['status'] = 'approved'
+            save_json(DEPOSIT_REQUESTS_FILE, deposits)
+            
+            await update.message.reply_text(
+                f"✅ Deposit Approved!\n"
+                f"👤 User: *{name}*\n"
+                f"💵 Amount: ₹{amount}",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(f"❌ User '{name}' not found!")
 
-@app.route('/admin/pyrogram_status', methods=['GET'])
-@admin_required
-def admin_pyrogram_status():
-    number_search_status = number_search_client.is_connected if number_search_client else False
-    username_search_status = [client.is_connected for client in username_search_clients]
+async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 1:
+        await update.message.reply_text("❌ Usage: /reject <request_id>")
+        return
     
-    return jsonify({
-        'success': True,
-        'number_search': number_search_status,
-        'username_search': username_search_status,
-        'active_username_account': ACTIVE_USERNAME_PYROGRAM_INDEX
-    }), 200
-
-@app.route('/admin/get_deposits', methods=['GET'])
-@admin_required
-def admin_get_deposits():
-    try:
-        with open(DEPOSIT_REQUESTS_FILE, 'r') as f:
-            deposits = json.load(f)
-        return jsonify({'success': True, 'deposits': deposits}), 200
-    except:
-        return jsonify({'success': True, 'deposits': []}), 200
-
-@app.route('/admin/approve_deposit', methods=['POST'])
-@admin_required
-def admin_approve_deposit():
-    data = request.get_json()
-    request_id = data.get('request_id')
+    request_id = context.args[0]
+    deposits = load_json(DEPOSIT_REQUESTS_FILE, [])
     
-    try:
-        with open(DEPOSIT_REQUESTS_FILE, 'r') as f:
-            deposits = json.load(f)
+    deposit_found = None
+    for dep in deposits:
+        dep_id = str(dep.get('request_id') or dep.get('id'))
+        if dep_id == str(request_id) and dep['status'] == 'pending':
+            deposit_found = dep
+            break
+    
+    if not deposit_found:
+        await update.message.reply_text("❌ Deposit not found or already processed!")
+        return
+    
+    deposit_found['status'] = 'rejected'
+    save_json(DEPOSIT_REQUESTS_FILE, deposits)
+    
+    await update.message.reply_text(f"✅ Deposit `{request_id}` rejected!", parse_mode='Markdown')
+
+
+async def show_promos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    promo_codes = load_json(PROMO_CODES_FILE, {})
+    
+    if not promo_codes:
+        msg = "📭 No promo codes found."
+    else:
+        msg = "🎁 *Promo Codes:*\n\n"
+        for code, data in promo_codes.items():
+            amount = data.get('amount', 0)
+            max_uses = data.get('max_uses', 0)
+            used = data.get('used_count', 0)
+            msg += f"• `{code}`: ₹{amount} (Used: {used}/{max_uses})\n"
         
-        deposit_found = None
-        for dep in deposits:
-            # Handle both 'request_id' and 'id' fields
-            dep_id = dep.get('request_id') or dep.get('id')
-            if str(dep_id) == str(request_id) and dep['status'] == 'pending':
-                deposit_found = dep
+        msg += "\n💡 Use /deletepromo <CODE> to delete a promo code"
+    
+    await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=get_main_keyboard())
+
+
+async def cmd_createpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 3:
+        await update.message.reply_text("❌ Usage: /createpromo <code> <amount> <max_uses>")
+        return
+    
+    code = context.args[0].upper()
+    try:
+        amount = float(context.args[1])
+        max_uses = int(context.args[2])
+        if amount <= 0:
+            await update.message.reply_text("❌ Amount must be greater than 0!")
+            return
+        if max_uses <= 0:
+            await update.message.reply_text("❌ Max uses must be greater than 0!")
+            return
+    except ValueError:
+        await update.message.reply_text("❌ Invalid amount or max_uses!")
+        return
+    
+    promo_codes = load_json(PROMO_CODES_FILE, {})
+    
+    if code in promo_codes:
+        await update.message.reply_text(f"❌ Promo code `{code}` already exists!")
+        return
+    
+    promo_codes[code] = {
+        'amount': amount,
+        'max_uses': max_uses,
+        'used_count': 0,
+        'used_by': []
+    }
+    save_json(PROMO_CODES_FILE, promo_codes)
+    
+    await update.message.reply_text(
+        f"✅ Promo code created!\n"
+        f"📝 Code: `{code}`\n"
+        f"💵 Amount: ₹{amount}\n"
+        f"🔢 Max Uses: {max_uses}",
+        parse_mode='Markdown'
+    )
+
+
+async def cmd_deletepromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 1:
+        await update.message.reply_text("❌ Usage: /deletepromo <code>")
+        return
+    
+    code = context.args[0].upper()
+    promo_codes = load_json(PROMO_CODES_FILE, {})
+    
+    if code not in promo_codes:
+        await update.message.reply_text(f"❌ Promo code `{code}` not found!")
+        return
+    
+    del promo_codes[code]
+    save_json(PROMO_CODES_FILE, promo_codes)
+    
+    await update.message.reply_text(f"✅ Promo code `{code}` deleted!", parse_mode='Markdown')
+
+
+async def cmd_userhistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 1:
+        await update.message.reply_text("❌ Usage: /userhistory <hash_code>")
+        return
+    
+    hash_code = context.args[0].upper()
+    
+    with users_lock:
+        users = load_users()
+        found_user = None
+        for name, user_data in users.items():
+            if user_data.get('hash_code') == hash_code:
+                found_user = name
                 break
         
-        if not deposit_found:
-            return jsonify({'success': False, 'message': 'Deposit not found or already processed'}), 404
+        if not found_user:
+            await update.message.reply_text(f"❌ User with hash `{hash_code}` not found!")
+            return
         
-        # Add balance to user - handle both 'name' and 'user_name' fields
-        name = deposit_found.get('name') or deposit_found.get('user_name')
-        amount = deposit_found['amount']
+        history = users[found_user].get('search_history', [])
+    
+    if not history:
+        await update.message.reply_text(f"📭 No search history for *{found_user}*", parse_mode='Markdown')
+        return
+    
+    msg = f"📜 *Search History: {found_user}*\n\n"
+    for entry in history[-20:]:
+        search_type = entry.get('search_type', 'unknown')
+        query = entry.get('query', 'N/A')
+        has_result = "✅" if entry.get('has_result') else "❌"
+        timestamp = time.strftime('%Y-%m-%d %H:%M', time.localtime(entry.get('timestamp', 0)))
+        msg += f"• {search_type}: `{query}` {has_result}\n  📅 {timestamp}\n\n"
+    
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+
+async def show_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    users = load_users()
+    deposits = load_json(DEPOSIT_REQUESTS_FILE, [])
+    pending_deposits = len([d for d in deposits if d.get('status') == 'pending'])
+    
+    number_status = "🟢" if number_search_client and number_search_client.is_connected else "🔴"
+    username_status = []
+    for idx, client in enumerate(username_search_clients):
+        status = "🟢" if client.is_connected else "🔴"
+        active = " (ACTIVE)" if idx == ACTIVE_USERNAME_PYROGRAM_INDEX else ""
+        username_status.append(f"  #{idx + 1}: {status}{active}")
+    
+    msg = (
+        "📊 *System Status*\n\n"
+        f"👥 Total Users: {len(users)}\n"
+        f"💰 Pending Deposits: {pending_deposits}\n\n"
+        f"📞 Number Search: {number_status}\n"
+        f"👤 Username Search:\n" + "\n".join(username_status)
+    )
+    
+    await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=get_main_keyboard())
+
+
+async def handle_button_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ACTIVE_USERNAME_PYROGRAM_INDEX
+    text = update.message.text
+    user_id = update.effective_user.id
+    
+    # Check if user is in a state
+    if user_id in user_states:
+        await handle_message(update, context)
+        return
+    
+    if text == "👥 Users":
+        await show_users(update, context)
+    
+    elif text == "💰 Deposits":
+        await show_deposits(update, context)
+    
+    elif text == "🎁 Promos":
+        await show_promos(update, context)
+    
+    elif text == "📊 Status":
+        await show_status(update, context)
+    
+    elif text == "➕ Add Balance":
+        user_states[user_id] = "awaiting_addbalance"
+        await update.message.reply_text(
+            "➕ *Add Balance*\n\nSend message in format:\n`HASHCODE AMOUNT`\n\nExample: `ABC123 500`",
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+    
+    elif text == "➖ Deduct Balance":
+        user_states[user_id] = "awaiting_deductbalance"
+        await update.message.reply_text(
+            "➖ *Deduct Balance*\n\nSend message in format:\n`HASHCODE AMOUNT`\n\nExample: `ABC123 500`",
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+    
+    elif text == "➕ Create Promo":
+        user_states[user_id] = "awaiting_createpromo"
+        await update.message.reply_text(
+            "🎁 *Create Promo Code*\n\nSend message in format:\n`CODE AMOUNT MAX_USES`\n\nExample: `WELCOME50 50 100`",
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+    
+    elif text == "📜 User History":
+        user_states[user_id] = "awaiting_userhistory"
+        await update.message.reply_text(
+            "📜 *User History*\n\nSend the user's hash code:\n\nExample: `ABC123`",
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+    
+    elif text == "🔄 Switch Account":
+        msg = "🔄 *Switch Pyrogram Account*\n\n"
+        for idx, client in enumerate(username_search_clients):
+            status = "🟢" if client.is_connected else "🔴"
+            active = " ✓ ACTIVE" if idx == ACTIVE_USERNAME_PYROGRAM_INDEX else ""
+            msg += f"{status} Account #{idx + 1}{active}\n"
+        msg += "\n💡 Send account number to switch (e.g., send `1` or `2`)"
         
-        if not name:
-            return jsonify({'success': False, 'message': 'User name not found in deposit'}), 400
+        user_states[user_id] = "awaiting_switch"
+        await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=get_main_keyboard())
+    
+    else:
+        await handle_message(update, context)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ACTIVE_USERNAME_PYROGRAM_INDEX
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    state = user_states.get(user_id)
+    
+    if not state:
+        return
+    
+    if state == "awaiting_addbalance":
+        parts = text.split()
+        if len(parts) < 2:
+            await update.message.reply_text("❌ Format: HASHCODE AMOUNT", reply_markup=get_main_keyboard())
+            return
+        
+        hash_code = parts[0].upper()
+        try:
+            amount = float(parts[1])
+        except ValueError:
+            await update.message.reply_text("❌ Invalid amount!", reply_markup=get_main_keyboard())
+            return
         
         with users_lock:
             users = load_users()
-            if name in users:
-                users[name]['balance'] = users[name].get('balance', 0) + amount
-                save_users(users)
-                deposit_found['status'] = 'approved'
-                
-                with open(DEPOSIT_REQUESTS_FILE, 'w') as f:
-                    json.dump(deposits, f, indent=2)
-                
-                return jsonify({'success': True, 'message': f'Approved! ₹{amount} added to {name}'}), 200
-            else:
-                return jsonify({'success': False, 'message': 'User not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-@app.route('/admin/reject_deposit', methods=['POST'])
-@admin_required
-def admin_reject_deposit():
-    data = request.get_json()
-    request_id = data.get('request_id')
+            found_user = None
+            for name, user_data in users.items():
+                if user_data.get('hash_code') == hash_code:
+                    found_user = name
+                    break
+            
+            if not found_user:
+                await update.message.reply_text(f"❌ User with hash `{hash_code}` not found!", parse_mode='Markdown', reply_markup=get_main_keyboard())
+                user_states.pop(user_id, None)
+                return
+            
+            users[found_user]['balance'] = users[found_user].get('balance', 0) + amount
+            save_users(users)
+            new_balance = users[found_user]['balance']
+        
+        await update.message.reply_text(
+            f"✅ Added ₹{amount} to *{found_user}*\n💰 New Balance: ₹{new_balance}",
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+        user_states.pop(user_id, None)
     
-    try:
-        with open(DEPOSIT_REQUESTS_FILE, 'r') as f:
-            deposits = json.load(f)
+    elif state == "awaiting_deductbalance":
+        parts = text.split()
+        if len(parts) < 2:
+            await update.message.reply_text("❌ Format: HASHCODE AMOUNT", reply_markup=get_main_keyboard())
+            return
         
-        deposit_found = None
-        for dep in deposits:
-            # Handle both 'request_id' and 'id' fields
-            dep_id = dep.get('request_id') or dep.get('id')
-            if str(dep_id) == str(request_id):
-                deposit_found = dep
-                break
+        hash_code = parts[0].upper()
+        try:
+            amount = float(parts[1])
+        except ValueError:
+            await update.message.reply_text("❌ Invalid amount!", reply_markup=get_main_keyboard())
+            return
         
-        if not deposit_found:
-            return jsonify({'success': False, 'message': 'Deposit not found'}), 404
+        with users_lock:
+            users = load_users()
+            found_user = None
+            for name, user_data in users.items():
+                if user_data.get('hash_code') == hash_code:
+                    found_user = name
+                    break
+            
+            if not found_user:
+                await update.message.reply_text(f"❌ User with hash `{hash_code}` not found!", parse_mode='Markdown', reply_markup=get_main_keyboard())
+                user_states.pop(user_id, None)
+                return
+            
+            users[found_user]['balance'] = users[found_user].get('balance', 0) - amount
+            save_users(users)
+            new_balance = users[found_user]['balance']
         
-        deposit_found['status'] = 'rejected'
+        await update.message.reply_text(
+            f"✅ Deducted ₹{amount} from *{found_user}*\n💰 New Balance: ₹{new_balance}",
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+        user_states.pop(user_id, None)
+    
+    elif state == "awaiting_createpromo":
+        parts = text.split()
+        if len(parts) < 3:
+            await update.message.reply_text("❌ Format: CODE AMOUNT MAX_USES", reply_markup=get_main_keyboard())
+            return
         
-        with open(DEPOSIT_REQUESTS_FILE, 'w') as f:
-            json.dump(deposits, f, indent=2)
+        code = parts[0].upper()
+        try:
+            amount = float(parts[1])
+            max_uses = int(parts[2])
+            if amount <= 0 or max_uses <= 0:
+                await update.message.reply_text("❌ Amount and max uses must be > 0!", reply_markup=get_main_keyboard())
+                return
+        except ValueError:
+            await update.message.reply_text("❌ Invalid amount or max uses!", reply_markup=get_main_keyboard())
+            return
         
-        return jsonify({'success': True, 'message': 'Deposit rejected'}), 200
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        promo_codes = load_json(PROMO_CODES_FILE, {})
+        
+        if code in promo_codes:
+            await update.message.reply_text(f"❌ Promo code `{code}` already exists!", parse_mode='Markdown', reply_markup=get_main_keyboard())
+            return
+        
+        promo_codes[code] = {
+            'amount': amount,
+            'max_uses': max_uses,
+            'used_count': 0,
+            'used_by': []
+        }
+        save_json(PROMO_CODES_FILE, promo_codes)
+        
+        await update.message.reply_text(
+            f"✅ Promo Created!\n📝 Code: `{code}`\n💵 Amount: ₹{amount}\n🔢 Max Uses: {max_uses}",
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+        user_states.pop(user_id, None)
+    
+    elif state == "awaiting_userhistory":
+        hash_code = text.upper()
+        
+        with users_lock:
+            users = load_users()
+            found_user = None
+            for name, user_data in users.items():
+                if user_data.get('hash_code') == hash_code:
+                    found_user = name
+                    break
+            
+            if not found_user:
+                await update.message.reply_text(f"❌ User with hash `{hash_code}` not found!", parse_mode='Markdown', reply_markup=get_main_keyboard())
+                user_states.pop(user_id, None)
+                return
+            
+            history = users[found_user].get('search_history', [])
+        
+        if not history:
+            await update.message.reply_text(f"📭 No search history for *{found_user}*", parse_mode='Markdown', reply_markup=get_main_keyboard())
+        else:
+            msg = f"📜 *Search History: {found_user}*\n\n"
+            for entry in history[-20:]:
+                search_type = entry.get('search_type', 'unknown')
+                query_text = entry.get('query', 'N/A')
+                has_result = "✅" if entry.get('has_result') else "❌"
+                timestamp = time.strftime('%Y-%m-%d %H:%M', time.localtime(entry.get('timestamp', 0)))
+                msg += f"• {search_type}: `{query_text}` {has_result}\n  📅 {timestamp}\n\n"
+            
+            await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=get_main_keyboard())
+        
+        user_states.pop(user_id, None)
+    
+    elif state == "awaiting_switch":
+        try:
+            index = int(text) - 1
+            if 0 <= index < len(username_search_clients):
+                ACTIVE_USERNAME_PYROGRAM_INDEX = index
+                await update.message.reply_text(
+                    f"✅ Switched to Account #{index + 1}",
+                    parse_mode='Markdown',
+                    reply_markup=get_main_keyboard()
+                )
+            else:
+                await update.message.reply_text("❌ Invalid account number!", reply_markup=get_main_keyboard())
+        except ValueError:
+            await update.message.reply_text("❌ Please send a valid account number!", reply_markup=get_main_keyboard())
+        
+        user_states.pop(user_id, None)
 
-def generate_hash_code():
-    """Generate a 6-letter alphanumeric hash code in CAPITAL letters"""
-    chars = string.ascii_uppercase + string.digits
-    return ''.join(choice(chars) for _ in range(6))
+# ============================================
+# FLASK API - USER ENDPOINTS
+# ============================================
+
+from flask import send_from_directory
+
+@app.route('/')
+def serve_index():
+    try:
+        with open('forentend/index.html', 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        return jsonify({'status': 'Backend API is running!'}), 200
+
+@app.route('/forentend/<path:filename>')
+def serve_static(filename):
+    return send_from_directory('forentend', filename)
+
+@app.route('/api/status')
+def health_check():
+    return jsonify({'status': 'Backend API is running!'}), 200
 
 @app.route('/signup', methods=['POST'])
 def signup():
@@ -660,12 +1069,11 @@ def signup():
             return jsonify({'success': False, 'message': 'Name is required'}), 400
 
         with users_lock:
-            init_files()  # Ensure files exist
+            init_files()
             users = load_users()
             if name in users:
                 return jsonify({'success': False, 'message': 'Name already taken'}), 409
 
-            # Generate unique hash code
             hash_code = generate_hash_code()
             while hash_code in [u.get('hash_code') for u in users.values()]:
                 hash_code = generate_hash_code()
@@ -679,20 +1087,18 @@ def signup():
 
         return jsonify({'success': True, 'message': f'Account created! Your Hash Code: {hash_code}', 'hash_code': hash_code}), 201
     except Exception as e:
-        print(f"[SIGNUP ERROR] {str(e)}")
         return jsonify({'success': False, 'message': f'Error: {str(e)}'}), 500
 
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
-    hash_code = data.get('hash_code', '').strip()
+    hash_code = data.get('hash_code', '').strip().upper()
 
     if not hash_code:
         return jsonify({'success': False, 'message': 'Hash Code is required'}), 400
 
     with users_lock:
         users = load_users()
-        # Find user by hash code
         found_user = None
         for name, user_data in users.items():
             if user_data.get('hash_code') == hash_code:
@@ -705,15 +1111,8 @@ def login():
     session['user_name'] = found_user
     return jsonify({'success': True, 'message': 'Login successful!', 'user_name': found_user}), 200
 
-@app.route('/logout')
-def logout():
-    session.pop('user_name', None)
-    return redirect(url_for('index'))
-
-
 @app.route('/get_balance', methods=['GET', 'POST'])
 def get_balance():
-    # Balance endpoint - client sends user_name
     if request.method == 'GET':
         name = request.args.get('user_name')
     else:
@@ -736,27 +1135,22 @@ def search_number():
         data = request.get_json()
         number = data.get('number')
 
-        print(f"\n{'='*50}")
-        print(f"[NUMBER SEARCH REQUEST] Number: {number}")
-
         if not number:
             return jsonify({'success': False, 'message': 'Phone number is required'}), 400
 
         if not (number.startswith('+91') and len(number) == 13 and number[1:].isdigit()):
-             if len(number) == 10 and number.isdigit():
-                 number = '+91' + number
-             else:
+            if len(number) == 10 and number.isdigit():
+                number = '+91' + number
+            else:
                 return jsonify({'success': False, 'message': 'Invalid phone number format. Use +91XXXXXXXXXX'}), 400
 
         name = data.get('user_name')
         if not name:
             return jsonify({'success': False, 'message': 'User name required'}), 400
-        
-        print(f"[NUMBER SEARCH] User: {name}, Formatted number: {number}")
-        
-        init_files()  # Ensure files exist
-        
+
+        init_files()
         NUMBER_SEARCH_PRICE = 4
+        
         with users_lock:
             users = load_users()
             user_data = users.get(name, {})
@@ -765,232 +1159,136 @@ def search_number():
             if current_balance < NUMBER_SEARCH_PRICE:
                 return jsonify({'success': False, 'message': f'Insufficient balance. Need ₹{NUMBER_SEARCH_PRICE}, have ₹{current_balance}'}), 402
 
-        # Check if this number was previously searched with no results
+        # Check if already searched with no result
         if is_already_searched_no_data(number, "number"):
-            print(f"[NUMBER SEARCH] Previously searched with no results: {number}")
-            add_search_to_user_history(name, "number", number, False)
-            return jsonify({'success': False, 'message': 'This search has been performed before and no result was found'}), 404
-        
+            return jsonify({'success': False, 'message': 'This number has been searched before and no result was found'}), 404
+
         query_id = randint(0, 9999999)
-        
-        print(f"[NUMBER SEARCH] Starting search for: {number}")
-        start_time = time.time()
-        
-        result = generate_report(number, query_id, is_username_search=False, is_userid_search=False)
-        
-        elapsed_time = time.time() - start_time
-        print(f"[NUMBER SEARCH] Completed in {elapsed_time:.2f} seconds")
-        print(f"[NUMBER SEARCH] Raw result: {result}")
+        result = generate_report(number, query_id)
 
-        if result and isinstance(result, dict) and 'status' in result:
-            if result.get('status') == 'no_results':
-                add_to_searched_no_data(number, "number", has_result=False)
-                add_search_to_user_history(name, "number", number, False)
-                print(f"[NUMBER SEARCH] No results found")
-                return jsonify({'success': False, 'message': result.get('message', 'No data found')}), 404
-            else:
-                print(f"[NUMBER SEARCH] Error occurred")
-                return jsonify({'success': False, 'message': result.get('message', 'An error occurred')}), 500
-        elif result and isinstance(result, list) and len(result) > 0:
-            first_item = result[0]
-            if isinstance(first_item, dict) and 'status' in first_item:
-                add_to_searched_no_data(number, "number", has_result=False)
-                add_search_to_user_history(name, "number", number, False)
-                print(f"[NUMBER SEARCH] Error in list response")
-                return jsonify({'success': False, 'message': first_item.get('message', 'No data found')}), 404
-
-            add_to_searched_no_data(number, "number", has_result=True)
-            add_search_to_user_history(name, "number", number, True)
-            new_balance = 0
+        if result and not (isinstance(result, dict) and result.get('status') == 'no_results'):
+            # Complete data found - deduct balance
             with users_lock:
                 users = load_users()
                 if name in users:
                     users[name]['balance'] = users[name].get('balance', 0) - NUMBER_SEARCH_PRICE
                     save_users(users)
-                    new_balance = users[name]['balance']
-
-            print(f"[NUMBER SEARCH] Returning success with {len(result)} records")
-            return jsonify({'success': True, 'data': result, 'new_balance': new_balance}), 200
+            add_search_to_user_history(name, "number", number, True)
+            add_to_searched_no_data(number, "number", has_result=True)
+            return jsonify({'success': True, 'data': result}), 200
         else:
-            add_to_searched_no_data(number, "number", has_result=False)
+            # Incomplete data or no result - don't deduct balance, block future searches
             add_search_to_user_history(name, "number", number, False)
-            print(f"[NUMBER SEARCH] No data found or error")
-            return jsonify({'success': False, 'message': 'No data found or an error occurred'}), 404
-    except Exception as e:
-        print(f"[SEARCH NUMBER ERROR] {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'message': f'Search error: {str(e)}'}), 500
+            add_to_searched_no_data(number, "number", has_result=False)
+            return jsonify({'success': False, 'message': 'No result found for this number'}), 404
 
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/search/username', methods=['POST'])
 def search_username():
-    data = request.get_json()
-    username = data.get('username')
-    name = data.get('user_name')
-    
-    print(f"\n{'='*50}")
-    print(f"[USERNAME SEARCH REQUEST] Username: {username}, User: {name}")
-    
-    if not name:
-        return jsonify({'success': False, 'message': 'User name required'}), 400
+    try:
+        data = request.get_json()
+        username = data.get('username', '').strip()
+        name = data.get('user_name')
 
-    if not username:
-        return jsonify({'success': False, 'message': 'Username is required'}), 400
+        if not username:
+            return jsonify({'success': False, 'message': 'Username is required'}), 400
+        if not name:
+            return jsonify({'success': False, 'message': 'User name required'}), 400
 
-    if username.startswith('@'):
-        username = username[1:]
+        if not username.startswith('@'):
+            username = '@' + username
 
-    if not username:
-        return jsonify({'success': False, 'message': 'Invalid username'}), 400
-
-    USERNAME_SEARCH_PRICE = 21
-    with users_lock:
-        users = load_users()
-        user_data = users.get(name, {})
-        current_balance = user_data.get('balance', 0)
-
-        if current_balance < USERNAME_SEARCH_PRICE:
-            return jsonify({'success': False, 'message': f'Insufficient balance. Need ₹{USERNAME_SEARCH_PRICE}, have ₹{current_balance}'}), 402
-
-    # Check if this username was previously searched with no results
-    if is_already_searched_no_data(username, "username"):
-        print(f"[USERNAME SEARCH] Previously searched with no results: {username}")
-        add_search_to_user_history(name, "username", "@" + username, False)
-        return jsonify({'success': False, 'message': 'This search has been performed before and no result was found'}), 404
-    
-    query_id = randint(0, 9999999)
-    
-    print(f"[USERNAME SEARCH] Starting search for: {username}")
-    start_time = time.time()
-    
-    phone_result = generate_report(username, query_id, True, False)
-    
-    elapsed_time = time.time() - start_time
-    print(f"[USERNAME SEARCH] Completed in {elapsed_time:.2f} seconds")
-    print(f"[USERNAME SEARCH] Phone result: {phone_result}")
-    
-    has_phone = phone_result and isinstance(phone_result, str) and phone_result.startswith('+')
-    
-    if has_phone:
-        add_to_searched_no_data(username, "username", has_result=True)
-        add_search_to_user_history(name, "username", "@" + username, True)
-        new_balance = 0
+        init_files()
+        USERNAME_SEARCH_PRICE = 21
+        
         with users_lock:
             users = load_users()
-            if name in users:
-                users[name]['balance'] = users[name].get('balance', 0) - USERNAME_SEARCH_PRICE
-                save_users(users)
-                new_balance = users[name]['balance']
+            user_data = users.get(name, {})
+            current_balance = user_data.get('balance', 0)
+            
+            if current_balance < USERNAME_SEARCH_PRICE:
+                return jsonify({'success': False, 'message': f'Insufficient balance. Need ₹{USERNAME_SEARCH_PRICE}, have ₹{current_balance}'}), 402
 
-        print(f"[USERNAME SEARCH] Returning success with phone: {phone_result}")
-        return jsonify({
-            'success': True,
-            'new_balance': new_balance,
-            'phone_number': phone_result
-        }), 200
-    else:
-        add_to_searched_no_data(username, "username", has_result=False)
-        add_search_to_user_history(name, "username", "@" + username, False)
-        print(f"[USERNAME SEARCH] No data found")
-        return jsonify({'success': False, 'message': 'No data found'}), 404
+        # Check if already searched with no result
+        if is_already_searched_no_data(username, "username"):
+            return jsonify({'success': False, 'message': 'This username has been searched before and no result was found'}), 404
+
+        query_id = randint(0, 9999999)
+        phone_number = generate_report(username, query_id, is_username_search=True)
+
+        if phone_number:
+            # Complete data found - deduct balance
+            with users_lock:
+                users = load_users()
+                if name in users:
+                    users[name]['balance'] = users[name].get('balance', 0) - USERNAME_SEARCH_PRICE
+                    save_users(users)
+            add_search_to_user_history(name, "username", username, True)
+            add_to_searched_no_data(username, "username", has_result=True)
+            return jsonify({
+                'success': True,
+                'phone_number': phone_number,
+                'profile': {'username': username.lstrip('@')}
+            }), 200
+        else:
+            # Incomplete data or no result - don't deduct balance, block future searches
+            add_search_to_user_history(name, "username", username, False)
+            add_to_searched_no_data(username, "username", has_result=False)
+            return jsonify({'success': False, 'message': 'No phone number found for this username'}), 404
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/search/userid', methods=['POST'])
 def search_userid():
-    data = request.get_json()
-    user_id_str = data.get('user_id')
-    name = data.get('user_name')
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id', '').strip()
+        name = data.get('user_name')
 
-    print(f"\n{'='*50}")
-    print(f"[USERID SEARCH REQUEST] UserID: {user_id_str}, User: {name}")
+        if not user_id:
+            return jsonify({'success': False, 'message': 'User ID is required'}), 400
+        if not name:
+            return jsonify({'success': False, 'message': 'User name required'}), 400
 
-    if not name:
-        return jsonify({'success': False, 'message': 'User name required'}), 400
-
-    if not user_id_str:
-        return jsonify({'success': False, 'message': 'User ID is required'}), 400
-
-    if not user_id_str.isdigit():
-        return jsonify({'success': False, 'message': 'User ID must be numeric'}), 400
-
-    USERID_SEARCH_PRICE = 21
-    with users_lock:
-        users = load_users()
-        user_data = users.get(name, {})
-        current_balance = user_data.get('balance', 0)
-
-        if current_balance < USERID_SEARCH_PRICE:
-            return jsonify({'success': False, 'message': f'Insufficient balance. Need ₹{USERID_SEARCH_PRICE}, have ₹{current_balance}'}), 402
-
-    # Check if this user_id was previously searched with no results
-    if is_already_searched_no_data(user_id_str, "user_id"):
-        print(f"[USERID SEARCH] Previously searched with no results: {user_id_str}")
-        add_search_to_user_history(name, "user_id", user_id_str, False)
-        return jsonify({'success': False, 'message': 'This search has been performed before and no result was found'}), 404
-    
-    query_id = randint(0, 9999999)
-    
-    print(f"[USERID SEARCH] Starting search for UserID: {user_id_str}")
-    start_time = time.time()
-    
-    result = generate_report(user_id_str, query_id, is_username_search=False, is_userid_search=True)
-    
-    elapsed_time = time.time() - start_time
-    print(f"[USERID SEARCH] Completed in {elapsed_time:.2f} seconds")
-    print(f"[USERID SEARCH] Result: {result}")
-
-    if result and isinstance(result, str) and result.startswith('+'):
-        add_to_searched_no_data(user_id_str, "user_id", has_result=True)
-        add_search_to_user_history(name, "user_id", user_id_str, True)
-        new_balance = 0
+        init_files()
+        USERID_SEARCH_PRICE = 21
+        
         with users_lock:
             users = load_users()
-            if name in users:
-                users[name]['balance'] = users[name].get('balance', 0) - USERID_SEARCH_PRICE
-                save_users(users)
-                new_balance = users[name]['balance']
+            user_data = users.get(name, {})
+            current_balance = user_data.get('balance', 0)
+            
+            if current_balance < USERID_SEARCH_PRICE:
+                return jsonify({'success': False, 'message': f'Insufficient balance. Need ₹{USERID_SEARCH_PRICE}, have ₹{current_balance}'}), 402
 
-        print(f"[USERID SEARCH] Returning success with phone: {result}")
-        return jsonify({'success': True, 'phone_number': result, 'user_id': user_id_str, 'new_balance': new_balance}), 200
-    else:
-        add_to_searched_no_data(user_id_str, "user_id", has_result=False)
-        add_search_to_user_history(name, "user_id", user_id_str, False)
-        print(f"[USERID SEARCH] No data found")
-        return jsonify({'success': False, 'message': 'No data found or an error occurred'}), 404
+        # Check if already searched with no result
+        if is_already_searched_no_data(user_id, "userid"):
+            return jsonify({'success': False, 'message': 'This user ID has been searched before and no result was found'}), 404
 
-@app.route('/admin/get_user_history', methods=['POST'])
-@admin_required
-def admin_get_user_history():
-    data = request.get_json()
-    hash_code = data.get('hash_code', '').strip().upper()
-    
-    if not hash_code:
-        return jsonify({'success': False, 'message': 'Hash code required'}), 400
-    
-    with users_lock:
-        users = load_users()
-        # Find user by hash_code
-        found_user = None
-        for name, user_data in users.items():
-            if user_data.get('hash_code') == hash_code:
-                found_user = name
-                break
-        
-        if not found_user:
-            return jsonify({'success': False, 'message': 'User not found with this hash code'}), 404
-        
-        user_data = users[found_user]
-        history = user_data.get('search_history', [])
-        # Return last 100 searches
-        history = history[-100:]
-        history.reverse() # Most recent first
-        
-        return jsonify({
-            'success': True, 
-            'user_name': found_user,
-            'hash_code': hash_code,
-            'history': history
-        }), 200
+        query_id = randint(0, 9999999)
+        phone_number = generate_report(user_id, query_id, is_userid_search=True)
+
+        if phone_number:
+            # Complete data found - deduct balance
+            with users_lock:
+                users = load_users()
+                if name in users:
+                    users[name]['balance'] = users[name].get('balance', 0) - USERID_SEARCH_PRICE
+                    save_users(users)
+            add_search_to_user_history(name, "userid", user_id, True)
+            add_to_searched_no_data(user_id, "userid", has_result=True)
+            return jsonify({'success': True, 'phone_number': phone_number}), 200
+        else:
+            # Incomplete data or no result - don't deduct balance, block future searches
+            add_search_to_user_history(name, "userid", user_id, False)
+            add_to_searched_no_data(user_id, "userid", has_result=False)
+            return jsonify({'success': False, 'message': 'No phone number found for this user ID'}), 404
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/get_my_history', methods=['GET', 'POST'])
 def get_my_history():
@@ -1007,9 +1305,8 @@ def get_my_history():
         users = load_users()
         user_data = users.get(user_name, {})
         history = user_data.get('search_history', [])
-        # Return last 50 searches
         history = history[-50:]
-        history.reverse() # Most recent first
+        history.reverse()
 
     return jsonify({'success': True, 'history': history}), 200
 
@@ -1021,32 +1318,22 @@ def apply_promo_code():
 
     if not user_name:
         return jsonify({'success': False, 'message': 'User name required'}), 400
-
     if not promo_code:
         return jsonify({'success': False, 'message': 'Promo code required'}), 400
 
-    # Load promo codes
-    try:
-        with open('promo_codes.json', 'r') as f:
-            promo_codes = json.load(f)
-    except:
-        promo_codes = {}
+    promo_codes = load_json(PROMO_CODES_FILE, {})
 
-    # Check if promo code exists
     if promo_code not in promo_codes:
         return jsonify({'success': False, 'message': 'Invalid promo code'}), 404
 
     promo_data = promo_codes[promo_code]
 
-    # Check if already used by this user
     if user_name in promo_data.get('used_by', []):
         return jsonify({'success': False, 'message': 'You have already used this promo code'}), 400
 
-    # Check if max uses reached
     if promo_data.get('used_count', 0) >= promo_data.get('max_uses', 0):
         return jsonify({'success': False, 'message': 'This promo code has reached its maximum usage limit'}), 400
 
-    # Apply promo code
     amount = promo_data.get('amount', 0)
     
     with users_lock:
@@ -1058,122 +1345,38 @@ def apply_promo_code():
         save_users(users)
         new_balance = users[user_name]['balance']
 
-    # Update promo code usage
     if 'used_by' not in promo_data:
         promo_data['used_by'] = []
     promo_data['used_by'].append(user_name)
     promo_data['used_count'] = promo_data.get('used_count', 0) + 1
-
-    with open('promo_codes.json', 'w') as f:
-        json.dump(promo_codes, f, indent=2)
+    save_json(PROMO_CODES_FILE, promo_codes)
 
     return jsonify({
         'success': True, 
         'message': f'Promo code applied! ₹{amount} added to your balance. New balance: ₹{new_balance}'
     }), 200
 
-@app.route('/admin/create_promo_code', methods=['POST'])
-@admin_required
-def admin_create_promo_code():
-    data = request.get_json()
-    promo_code = data.get('promo_code', '').strip().upper()
-    amount = data.get('amount')
-    max_uses = data.get('max_uses')
-
-    if not promo_code or not amount or not max_uses:
-        return jsonify({'success': False, 'message': 'All fields required'}), 400
-
-    # Load existing promo codes
-    try:
-        with open('promo_codes.json', 'r') as f:
-            promo_codes = json.load(f)
-    except:
-        promo_codes = {}
-
-    # Check if promo code already exists
-    if promo_code in promo_codes:
-        return jsonify({'success': False, 'message': 'Promo code already exists'}), 409
-
-    # Create new promo code
-    promo_codes[promo_code] = {
-        'amount': float(amount),
-        'max_uses': int(max_uses),
-        'used_count': 0,
-        'used_by': []
-    }
-
-    # Save promo codes
-    with open('promo_codes.json', 'w') as f:
-        json.dump(promo_codes, f, indent=2)
-
-    return jsonify({'success': True, 'message': f'Promo code "{promo_code}" created successfully!'}), 200
-
-@app.route('/admin/get_promo_codes', methods=['GET'])
-@admin_required
-def admin_get_promo_codes():
-    try:
-        with open('promo_codes.json', 'r') as f:
-            promo_codes = json.load(f)
-        return jsonify({'success': True, 'promo_codes': promo_codes}), 200
-    except:
-        return jsonify({'success': True, 'promo_codes': {}}), 200
-
-@app.route('/admin/delete_promo_code', methods=['POST'])
-@admin_required
-def admin_delete_promo_code():
-    data = request.get_json()
-    promo_code = data.get('promo_code', '').strip().upper()
-
-    if not promo_code:
-        return jsonify({'success': False, 'message': 'Promo code required'}), 400
-
-    try:
-        with open('promo_codes.json', 'r') as f:
-            promo_codes = json.load(f)
-
-        if promo_code not in promo_codes:
-            return jsonify({'success': False, 'message': 'Promo code not found'}), 404
-
-        del promo_codes[promo_code]
-
-        with open('promo_codes.json', 'w') as f:
-            json.dump(promo_codes, f, indent=2)
-
-        return jsonify({'success': True, 'message': f'Promo code "{promo_code}" deleted'}), 200
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
 @app.route('/submit_deposit', methods=['POST'])
 def submit_deposit():
     data = request.get_json()
     amount = data.get('amount')
     utr = data.get('utr')
-    # Accept both 'name' and 'user_name' for compatibility
     name = data.get('name') or data.get('user_name')
 
     if not name:
         return jsonify({'success': False, 'message': 'User name required'}), 400
-
     if not amount or float(amount) < 25:
         return jsonify({'success': False, 'message': 'Minimum amount is ₹25'}), 400
-
     if not utr or len(utr) != 12 or not utr.isdigit():
         return jsonify({'success': False, 'message': 'Invalid UTR (must be 12 digits)'}), 400
 
-    # Verify user exists in web_users
     with users_lock:
         users = load_users()
         if name not in users:
             return jsonify({'success': False, 'message': 'User not found'}), 404
 
-    # Load deposit requests
-    try:
-        with open(DEPOSIT_REQUESTS_FILE, 'r') as f:
-            deposit_requests = json.load(f)
-    except:
-        deposit_requests = []
+    deposit_requests = load_json(DEPOSIT_REQUESTS_FILE, [])
 
-    # Add new request
     request_id = randint(100000, 999999)
     new_request = {
         'request_id': request_id,
@@ -1184,104 +1387,120 @@ def submit_deposit():
         'status': 'pending'
     }
     deposit_requests.append(new_request)
-
-    # Save requests
-    with open(DEPOSIT_REQUESTS_FILE, 'w') as f:
-        json.dump(deposit_requests, f, indent=2)
+    save_json(DEPOSIT_REQUESTS_FILE, deposit_requests)
 
     return jsonify({'success': True, 'message': 'Deposit request submitted'}), 200
 
+# ============================================
+# MAIN - RUN BOTH BOT AND FLASK
+# ============================================
 
-async def start_pyrogram_client(client, client_name):
-    """Start a single Pyrogram client"""
+import os
+import signal
+import sys
+
+bot_running = False
+telegram_app = None
+
+def run_telegram_bot_blocking():
+    """Run Telegram bot - blocking call"""
+    global telegram_app, bot_running
+    
     try:
-        await client.start()
-        print(f"✅ {client_name} connected.")
-        return True
+        print("\n" + "="*60)
+        print("🤖 STARTING TELEGRAM ADMIN BOT...")
+        print("="*60)
+        
+        telegram_app = Application.builder().token(BOT_TOKEN).build()
+        telegram_app.add_handler(CommandHandler("start", cmd_start))
+        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_text))
+        
+        print("📋 Telegram Bot Commands:")
+        print("/start - Open Admin Panel with Buttons")
+        print(f"Admin ID: {ADMIN_ID}")
+        print("="*60 + "\n")
+        
+        bot_running = True
+        print("✅ Bot polling started!")
+        telegram_app.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=(signal.SIGINT, signal.SIGTERM))
+        
     except Exception as e:
-        print(f"❌ {client_name} connection error: {e}")
+        print(f"❌ Bot Error: {e}")
         import traceback
         traceback.print_exc()
-        return False
 
-def ensure_pyrogram_session():
-    """Ensure Pyrogram accounts are authenticated"""
-    try:
-        loop = get_pyrogram_loop()
-        
-        # Give the loop some time to start
-        import time
-        time.sleep(2)
-        
-        if number_search_client:
-            print("\n📞 Authenticating Number Search Pyrogram...")
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    start_pyrogram_client(number_search_client, "Number Search Pyrogram"),
-                    loop
-                )
-                result = future.result(timeout=30)
-                if result:
-                    print("✅ Number Search Pyrogram authenticated successfully")
-                else:
-                    print("⚠️ Number Search Pyrogram authentication failed")
-            except Exception as e:
-                print(f"❌ Number Search Pyrogram error: {e}")
+def run_telegram_bot_thread():
+    """Run bot in separate thread"""
+    bot_thread = threading.Thread(target=run_telegram_bot_blocking, daemon=False)
+    bot_thread.start()
+    return bot_thread
 
-        for idx, client in enumerate(username_search_clients):
-            config = USERNAME_SEARCH_PYROGRAMS[idx]
-            if config.get('api_id', 0) == 0 or not config.get('api_hash'):
-                print(f"⚠️ Skipping Username Search Pyrogram #{idx + 1} - not configured")
-                continue
-            print(f"\n👤 Authenticating Username Search Pyrogram #{idx + 1}...")
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    start_pyrogram_client(client, f"Username Search Pyrogram #{idx + 1}"),
-                    loop
-                )
-                result = future.result(timeout=30)
-                if result:
-                    print(f"✅ Username Search Pyrogram #{idx + 1} authenticated successfully")
-                else:
-                    print(f"⚠️ Username Search Pyrogram #{idx + 1} authentication failed")
-            except Exception as e:
-                print(f"❌ Username Search Pyrogram #{idx + 1} error: {e}")
+def run_flask():
+    """Run Flask on port 5000"""
+    port = int(os.environ.get("PORT", 5000))
+    print(f"🌐 Starting Flask API on port {port}...")
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True)
 
-        print("\n✅ Pyrogram authentication process completed.")
-        return True
-    except Exception as e:
-        print(f"\n❌ Pyrogram connection error: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def main():
+def initialize_app():
+    """Initialize when app is imported (for gunicorn) - FLASK ONLY on production"""
+    import sys
+    is_gunicorn = "gunicorn" in sys.argv[0] if sys.argv else False
+    
+    print("\n" + "="*60)
+    print("🚀 Search Dashboard - Backend Starting...")
+    print(f"📍 Mode: {'PRODUCTION (gunicorn)' if is_gunicorn else 'DEVELOPMENT'}")
+    print("="*60 + "\n")
+    
     init_files()
     print("✅ Files initialized")
+    
+    # Only initialize Pyrogram on development (not gunicorn)
+    if not is_gunicorn:
+        try:
+            init_pyrogram_clients()
+            if number_search_client or username_search_clients:
+                if not ensure_pyrogram_session():
+                    print("⚠️ Warning: Some Pyrogram sessions may not be connected")
+        except Exception as e:
+            print(f"⚠️ Pyrogram init skipped: {e}")
+    else:
+        print("⏭️  Skipping Pyrogram init on production (gunicorn)")
+        print("📌 Run bot separately on local machine")
 
-    if not ensure_pyrogram_session():
-        print("⚠️ Warning: Pyrogram authentication failed. Some search features might not work.")
+initialize_app()
 
-    print("\n🚀 Starting Flask web application...")
-    print("\n" + "="*70)
-    print("📋 BACKEND API CONFIGURATION")
-    print("="*70)
-    print("\n✅ Backend is running on: http://0.0.0.0:5000")
-    print("\n🔗 FOR FRONTEND DEPLOYMENT:")
-    print("   Copy your Wispbyte/deployment URL and paste in frontend/index.html")
-    print("   Example: const API_URL = 'https://your-backend-url.com';")
-    print("\n📡 API ENDPOINTS AVAILABLE:")
-    print("   • POST /login - User login")
-    print("   • POST /signup - User signup")
-    print("   • POST /search/number - Phone number search")
-    print("   • POST /search/username - Username search")
-    print("   • POST /search/userid - UserID search")
-    print("   • GET /get_balance - Get user balance")
-    print("   • GET /admin - Admin panel")
-    print("\n" + "="*70 + "\n")
-    # Don't run on Vercel - use api/index.py instead
-    if os.getenv('VERCEL') is None:
-        app.run(host='0.0.0.0', port=5000, debug=False)
+def main():
+    """Main entry point for direct execution"""
+    print("\n" + "="*60)
+    print("🚀 Search Dashboard - Backend Starting...")
+    print("="*60 + "\n")
+    
+    init_files()
+    print("✅ Files initialized")
+    
+    init_pyrogram_clients()
+    
+    if number_search_client or username_search_clients:
+        if not ensure_pyrogram_session():
+            print("⚠️ Warning: Some Pyrogram sessions may not be connected")
+    
+    if not BOT_TOKEN:
+        print("\n⚠️ BOT_TOKEN not set! Starting Flask API only...")
+        port = int(os.environ.get("PORT", 5000))
+        app.run(host='0.0.0.0', port=port, debug=False)
+        return
+    
+    print("\n🤖 Starting Telegram Bot + Flask API...\n")
+    
+    # Start bot in separate thread
+    bot_thread = run_telegram_bot_thread()
+    
+    # Give bot time to initialize
+    import time
+    time.sleep(2)
+    
+    # Run Flask on main thread
+    run_flask()
 
 if __name__ == "__main__":
     main()
